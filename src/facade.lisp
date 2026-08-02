@@ -322,9 +322,7 @@
                     :replace replace))))
 
 (defun move-path (source target &key (replace t))
-  (copy-path source target :replace replace)
-  (unlink source)
-  (ensure-path target :filesystem (path-filesystem (ensure-path source))))
+  (rename-path source target :replace replace))
 
 (defun create-symlink (link target)
   (let ((l (ensure-path link)))
