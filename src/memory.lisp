@@ -338,6 +338,9 @@
            (let* ((src-prefix (if (string= sk "/") "/" (concatenate 'string sk "/")))
                   (tgt-prefix (if (string= tk "/") "/" (concatenate 'string tk "/")))
                   (updates '()))
+             (when (uiop:string-prefix-p src-prefix tgt-prefix)
+               (error 'path-error :filesystem fs :path source
+                      :message "cannot copy directory into its descendant"))
              (maphash (lambda (k v)
                         (when (and (uiop:string-prefix-p src-prefix k)
                                    (not (string= k sk)))

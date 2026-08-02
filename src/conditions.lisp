@@ -149,11 +149,15 @@ invoke RETRY after mutating the filesystem."
 
 (defun auto-overwrite (condition)
   "HANDLER-BIND function: invoke OVERWRITE when available."
-  (invoke-overwrite condition))
+  (if (find-restart 'overwrite condition)
+      (invoke-overwrite condition)
+      (error condition)))
 
 (defun auto-ignore-missing (condition)
   "HANDLER-BIND function: invoke IGNORE-MISSING when available."
-  (invoke-ignore-missing condition))
+  (if (find-restart 'ignore-missing condition)
+      (invoke-ignore-missing condition)
+      (error condition)))
 
 (defmacro with-auto-create-parents (&body body)
   "On MISSING-PARENT with CREATE-PARENTS, create parents + retry."
