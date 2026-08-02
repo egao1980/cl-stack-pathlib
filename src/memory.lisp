@@ -142,11 +142,13 @@
     (nreverse out)))
 
 (defmethod fs-glob ((fs memory-filesystem) pathname pattern &key recursive)
-  (let ((base (fs-absolute fs pathname))
-        (out '()))
+  (let* ((base (fs-absolute fs pathname))
+         (prefix (%mem-key fs base))
+         (prefix (if (string= prefix "/") "/" (concatenate 'string prefix "/")))
+         (out '()))
     (maphash (lambda (k v)
                (declare (ignore v))
-               (when (and (uiop:string-prefix-p (%mem-key fs base) k)
+               (when (and (uiop:string-prefix-p prefix k)
                           (if recursive
                               (pathname-match-p k (merge-pathnames pattern "**/*"))
                               t))
@@ -176,10 +178,13 @@
       (unless (and exist-ok (fs-directory-p fs abs))
         (error 'path-exists-error :filesystem fs :path abs))
       (return-from fs-mkdir abs))
-    (when parents
-      (let ((parent (fs-parent fs abs)))
-        (unless (or (%pathname-root-p parent) (fs-directory-p fs parent))
-          (fs-mkdir fs parent :parents t :exist-ok t))))
+    (let ((parent (fs-parent fs abs)))
+      (if parents
+          (unless (or (%pathname-root-p parent) (fs-directory-p fs parent))
+            (fs-mkdir fs parent :parents t :exist-ok t))
+          (unless (or (%pathname-root-p parent) (fs-directory-p fs parent))
+            (error 'path-not-found :filesystem fs :path abs
+                   :message "parent directory does not exist"))))
     (setf (gethash key (memory-fs-root fs)) :dir)
     abs))
 
@@ -193,11 +198,14 @@
     t))
 
 (defmethod fs-unlink ((fs memory-filesystem) pathname &key (missing-ok nil))
-  (let ((key (%mem-key fs (fs-absolute fs pathname))))
-    (unless (gethash key (memory-fs-root fs))
+  (let* ((key (%mem-key fs (fs-absolute fs pathname)))
+         (ent (gethash key (memory-fs-root fs))))
+    (unless ent
       (unless missing-ok
         (error 'path-not-found :filesystem fs :path pathname))
       (return-from fs-unlink nil))
+    (when (eq ent :dir)
+      (error 'path-error :filesystem fs :path pathname :message "is a directory"))
     (remhash key (memory-fs-root fs))
     t))
 

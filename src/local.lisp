@@ -152,7 +152,12 @@
            (ensure-directories-exist (merge-pathnames (make-pathname :name "x") dir))
            dir)
           (t
-           (ensure-directories-exist (merge-pathnames (make-pathname :name "x") dir))
+           (let ((parent (uiop:pathname-parent-directory-pathname dir)))
+             (unless (uiop:directory-exists-p parent)
+               (error 'path-not-found :filesystem fs :path dir
+                      :message "parent directory does not exist"))
+             #+sbcl (sb-posix:mkdir (namestring dir) #o755)
+             #-sbcl (uiop:run-program (list "mkdir" (uiop:unix-namestring dir)) :ignore-error-status nil))
            dir))))
 
 (defmethod fs-rmdir ((fs local-filesystem) pathname)
