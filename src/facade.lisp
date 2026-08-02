@@ -396,7 +396,7 @@ Stops when PARENT is a fixed point (root), so broken backends cannot loop."
              (unless (<= (+ i n) len)
                (error "invalid UTF-8: truncated sequence at byte ~D" i))))
     (let ((len (length bytes))
-          (out (make-string 0 :adjustable t :fill-pointer 0))
+          (out (make-array 0 :element-type 'character :adjustable t :fill-pointer 0))
           (i 0))
       (loop while (< i len)
             do (let ((b0 (aref bytes i)))
