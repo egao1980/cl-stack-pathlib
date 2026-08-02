@@ -1,0 +1,56 @@
+# cl-stack-pathlib
+
+MIT. CLOS **path** values + pluggable **filesystem** protocol for [cl-stack](https://github.com/egao1980/cl-stack).
+
+Python **pathlib** / Java **NIO.2 Path+Files+FileSystem** feature shape, Common Lisp DX:
+
+- pathnames under the hood (UIOP)
+- `path` objects bound to a `filesystem`
+- keyword-heavy facade (`join`, `absolute` vs `resolve`, `read-text`, …)
+- conditions, not status codes
+- escape hatch: `path-pathname`
+
+## Why
+
+OCI install roots and generated `cl-repo-init` must keep path identity (`/tmp` ≠ `/private/tmp`). That is `absolute` (no symlink resolve), not `resolve` (NIO `toRealPath` / pathlib `resolve`).
+
+Virtual FS support: specialize `filesystem` (shipped: `local-filesystem`, `memory-filesystem`; zip/OCI overlays later).
+
+## Quick start
+
+```lisp
+(asdf:load-system "cl-stack-pathlib")
+(use-package :cl-stack-pathlib) ; or (:local-nicknames (#:sp #:cl-stack-pathlib))
+
+(join "/opt/pkg" "native" "libssl.so")
+(absolute "relative/x")          ; no symlink follow
+(resolve "/etc/passwd")          ; real path
+
+(with-filesystem ((make-memory-filesystem))
+  (write-text "/a/b.txt" "hi")
+  (read-text "/a/b.txt"))
+```
+
+Nickname: `stack-pathlib` only — not `path` (clashes with cl-fad / filepaths).
+
+## Amalgamates
+
+| Source | Ideas |
+|--------|--------|
+| Python pathlib | Path value, absolute vs resolve, glob/walk, IO helpers |
+| Java NIO.2 | FileSystem SPI, Path bound to FS, Files.* ops |
+| fosskers/filepaths | join/name/base/extension clarity |
+| ppath | abspath/realpath split, expanduser |
+| cl-fad / UIOP | portable probes, copy, temp |
+
+## Protocol (backends)
+
+Specialize generics on `filesystem`: `fs-parse`, `fs-join`, `fs-exists-p`, `fs-read-bytes`, `fs-mkdir`, …  
+Default `*filesystem*` is `local-filesystem`.
+
+## Tests
+
+```bash
+sbcl --eval '(asdf:load-asd "cl-stack-pathlib.asd")' \
+     --eval '(asdf:test-system "cl-stack-pathlib")'
+```
