@@ -49,15 +49,29 @@
                       (t (format nil "~{~A~^/~}" stack)))
                 :directory dir?))))
 
+(defun %passwd-home (username)
+  (with-open-file (in "/etc/passwd" :if-does-not-exist nil)
+    (loop for line = (read-line in nil nil) while line
+          do (let ((parts (uiop:split-string line :separator ":")))
+               (when (and (>= (length parts) 7) (string= username (first parts)))
+                 (return (uiop:parse-native-namestring (nth 5 parts))))))))
+
+(defun %expand-tilde-string (s)
+  (cond ((= (length s) 1) (user-homedir-pathname))
+        ((char= (char s 1) #\/) (merge-pathnames (subseq s 2) (user-homedir-pathname)))
+        (t (let* ((slash (position #\/ s :start 1))
+                  (username (subseq s 1 slash))
+                  (rest (if slash (subseq s slash) ""))
+                  (home (%passwd-home username)))
+             (if home
+                 (merge-pathnames rest home)
+                 (uiop:parse-native-namestring s))))))
+
 (defmethod fs-expanduser ((fs local-filesystem) pathname)
   (let* ((pn (fs-parse fs pathname))
          (s (namestring pn)))
     (if (and (plusp (length s)) (char= (char s 0) #\~))
-        (fs-parse fs (uiop:parse-native-namestring
-                      (uiop:native-namestring
-                       (merge-pathnames
-                        (subseq s (if (and (> (length s) 1) (char= (char s 1) #\/)) 2 1))
-                        (user-homedir-pathname)))))
+        (fs-parse fs (uiop:parse-native-namestring (uiop:native-namestring (%expand-tilde-string s))))
         pn)))
 
 (defmethod fs-exists-p ((fs local-filesystem) pathname)
