@@ -137,11 +137,15 @@ invoke RETRY after mutating the filesystem."
 
 (defun auto-create-parents (condition)
   "HANDLER-BIND function: invoke CREATE-PARENTS when available."
-  (invoke-create-parents condition))
+  (if (find-restart 'create-parents condition)
+      (invoke-create-parents condition)
+      (error condition)))
 
 (defun auto-create-file (condition)
   "HANDLER-BIND function: invoke CREATE-FILE when available."
-  (invoke-create-file condition))
+  (if (find-restart 'create-file condition)
+      (invoke-create-file condition)
+      (error condition)))
 
 (defun auto-overwrite (condition)
   "HANDLER-BIND function: invoke OVERWRITE when available."
@@ -152,9 +156,8 @@ invoke RETRY after mutating the filesystem."
   (invoke-ignore-missing condition))
 
 (defmacro with-auto-create-parents (&body body)
-  "On MISSING-PARENT / PATH-NOT-FOUND with CREATE-PARENTS, create parents + retry."
-  `(handler-bind ((missing-parent #'auto-create-parents)
-                  (path-not-found #'auto-create-parents))
+  "On MISSING-PARENT with CREATE-PARENTS, create parents + retry."
+  `(handler-bind ((missing-parent #'auto-create-parents))
      (with-path-restarts ,@body)))
 
 (defmacro with-auto-create-file (&body body)
