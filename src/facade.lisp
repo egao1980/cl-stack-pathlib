@@ -197,9 +197,10 @@ Stops when PARENT is a fixed point (root), so broken backends cannot loop."
                (fs-absolute (path-filesystem p) (path-pathname p))))))
 
 (defun resolve (designator &key (strict t))
-  (let ((p (ensure-path designator)))
-    (%wrap (path-filesystem p)
-           (fs-resolve (path-filesystem p) (path-pathname p) :strict strict))))
+  (with-path-restarts
+    (let ((p (ensure-path designator)))
+      (%wrap (path-filesystem p)
+             (fs-resolve (path-filesystem p) (path-pathname p) :strict strict)))))
 
 (defun expanduser (designator)
   (let ((p (ensure-path designator)))
@@ -316,46 +317,51 @@ Stops when PARENT is a fixed point (root), so broken backends cannot loop."
                                           :follow-symlinks follow-symlinks))))
 
 (defun mkdir (designator &key (parents t) (exist-ok t))
-  (let ((p (ensure-path designator)))
-    (%wrap (path-filesystem p)
-           (fs-mkdir (path-filesystem p) (path-pathname p)
-                     :parents parents :exist-ok exist-ok))))
+  (with-path-restarts
+    (let ((p (ensure-path designator)))
+      (%wrap (path-filesystem p)
+             (fs-mkdir (path-filesystem p) (path-pathname p)
+                       :parents parents :exist-ok exist-ok)))))
 
 (defun rmdir (designator)
-  (let ((p (ensure-path designator)))
-    (fs-rmdir (path-filesystem p) (path-pathname p))))
+  (with-path-restarts
+    (let ((p (ensure-path designator)))
+      (fs-rmdir (path-filesystem p) (path-pathname p)))))
 
 (defun unlink (designator &key (missing-ok nil))
-  (let ((p (ensure-path designator)))
-    (fs-unlink (path-filesystem p) (path-pathname p) :missing-ok missing-ok)))
+  (with-path-restarts
+    (let ((p (ensure-path designator)))
+      (fs-unlink (path-filesystem p) (path-pathname p) :missing-ok missing-ok))))
 
 (setf (fdefinition 'delete-path) (fdefinition 'unlink))
 
 (defun touch (designator &key (exist-ok t))
-  (let ((p (ensure-path designator)))
-    (%wrap (path-filesystem p)
-           (fs-touch (path-filesystem p) (path-pathname p) :exist-ok exist-ok))))
+  (with-path-restarts
+    (let ((p (ensure-path designator)))
+      (%wrap (path-filesystem p)
+             (fs-touch (path-filesystem p) (path-pathname p) :exist-ok exist-ok)))))
 
 (defun rename-path (source target &key (replace t))
-  (let ((s (ensure-path source)))
-    (%wrap (path-filesystem s)
-           (fs-rename (path-filesystem s) (path-pathname s)
-                      (path-pathname (ensure-path target :filesystem (path-filesystem s)))
-                      :replace replace))))
+  (with-path-restarts
+    (let ((s (ensure-path source)))
+      (%wrap (path-filesystem s)
+             (fs-rename (path-filesystem s) (path-pathname s)
+                        (path-pathname (ensure-path target :filesystem (path-filesystem s)))
+                        :replace replace)))))
 
 (defun replace-path (source target)
   (rename-path source target :replace t))
 
 (defun copy-path (source target &key (replace t))
-  (let ((s (ensure-path source)))
-    (%wrap (path-filesystem s)
-           (fs-copy (path-filesystem s) (path-pathname s)
-                    (path-pathname (ensure-path target :filesystem (path-filesystem s)))
-                    :replace replace))))
+  (with-path-restarts
+    (let ((s (ensure-path source)))
+      (%wrap (path-filesystem s)
+             (fs-copy (path-filesystem s) (path-pathname s)
+                      (path-pathname (ensure-path target :filesystem (path-filesystem s)))
+                      :replace replace)))))
 
 (defun move-path (source target &key (replace t))
   (rename-path source target :replace replace))
-
 (defun create-symlink (link target)
   (let ((l (ensure-path link)))
     (%wrap (path-filesystem l)
@@ -380,13 +386,15 @@ Stops when PARENT is a fixed point (root), so broken backends cannot loop."
     (%wrap filesystem (fs-mkdir filesystem pn :parents t :exist-ok t))))
 
 (defun read-bytes (designator)
-  (let ((p (ensure-path designator)))
-    (fs-read-bytes (path-filesystem p) (path-pathname p))))
+  (with-path-restarts
+    (let ((p (ensure-path designator)))
+      (fs-read-bytes (path-filesystem p) (path-pathname p)))))
 
 (defun write-bytes (designator bytes &key append)
-  (let ((p (ensure-path designator)))
-    (%wrap (path-filesystem p)
-           (fs-write-bytes (path-filesystem p) (path-pathname p) bytes :append append))))
+  (with-path-restarts
+    (let ((p (ensure-path designator)))
+      (%wrap (path-filesystem p)
+             (fs-write-bytes (path-filesystem p) (path-pathname p) bytes :append append)))))
 
 (defun read-text (designator &key (encoding :utf-8))
   (ecase encoding
@@ -397,14 +405,13 @@ Stops when PARENT is a fixed point (root), so broken backends cannot loop."
   (ecase encoding
     (:utf-8 (write-bytes designator (utf8-string-to-octets text) :append append))
     (otherwise (error "unsupported text encoding ~S" encoding))))
-
 (defun utf8-octets-to-string (bytes)
-  (labels ((need (n)
+  (let ((len (length bytes))
+        (out (make-array 0 :element-type 'character :adjustable t :fill-pointer 0))
+        (i 0))
+    (flet ((need (n)
              (unless (<= (+ i n) len)
                (error "invalid UTF-8: truncated sequence at byte ~D" i))))
-    (let ((len (length bytes))
-          (out (make-array 0 :element-type 'character :adjustable t :fill-pointer 0))
-          (i 0))
       (loop while (< i len)
             do (let ((b0 (aref bytes i)))
                  (cond ((< b0 #x80)
@@ -433,9 +440,8 @@ Stops when PARENT is a fixed point (root), so broken backends cannot loop."
                                             (ash (logand (aref bytes (+ i 2)) #x3F) 6)
                                             (logand (aref bytes (+ i 3)) #x3F)))
                          out)
-                        (incf i 4)))))
-      out)))
-
+                        (incf i 4))))))
+    out))
 (defun utf8-string-to-octets (text)
   (let ((out (make-array 0 :element-type '(unsigned-byte 8) :adjustable t :fill-pointer 0)))
     (flet ((push-byte (b) (vector-push-extend b out)))

@@ -137,7 +137,33 @@
    #:path-error
    #:path-error-path
    #:path-error-filesystem
+   #:path-error-message
    #:path-not-found
+   #:missing-parent
    #:path-exists-error
    #:not-relative-error
-   #:unsupported-operation))
+   #:unsupported-operation
+   #:directory-not-empty
+   ;; restarts (invoke via INVOKE-RESTART / helpers)
+   #:retry
+   #:create-parents
+   #:create-file
+   #:create-directory
+   #:overwrite
+   #:ignore-missing
+   #:call-with-path-restarts
+   #:with-path-restarts
+   #:invoke-create-parents
+   #:invoke-create-file
+   #:invoke-create-directory
+   #:invoke-overwrite
+   #:invoke-ignore-missing
+   #:invoke-retry
+   #:auto-create-parents
+   #:auto-create-file
+   #:auto-overwrite
+   #:auto-ignore-missing
+   #:with-auto-create-parents
+   #:with-auto-create-file
+   #:with-auto-overwrite
+   #:with-auto-ignore-missing))

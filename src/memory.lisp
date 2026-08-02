@@ -78,13 +78,21 @@
          (root (memory-fs-root fs))
          (ent (gethash key root)))
     (when (and strict (null ent))
-      (error 'path-not-found :filesystem fs :path abs))
+      (return-from fs-resolve
+        (%restart-path-not-found fs abs
+                                 :message "path does not exist"
+                                 :allow-create-file t
+                                 :allow-create-directory t
+                                 :allow-ignore nil)))
     (let ((resolved (%mem-follow-symlink fs key)))
       (if (or (gethash resolved root) (not strict))
           (fs-parse fs resolved)
-          (error 'path-not-found :filesystem fs :path abs)))))
-
-(defmethod fs-normpath ((fs memory-filesystem) pathname)
+          (return-from fs-resolve
+            (%restart-path-not-found fs abs
+                                     :message "path does not exist"
+                                     :allow-create-file t
+                                     :allow-create-directory t
+                                     :allow-ignore nil))))))(defmethod fs-normpath ((fs memory-filesystem) pathname)
   (let ((pn (fs-parse fs pathname)))
     (multiple-value-bind (abs? stack dir?) (%collapse-dot-segments pn)
       (fs-parse fs
@@ -199,24 +207,33 @@
          (key (%mem-key fs abs)))
     (when (fs-exists-p fs abs)
       (unless (and exist-ok (fs-directory-p fs abs))
-        (error 'path-exists-error :filesystem fs :path abs))
+        (restart-case
+            (error 'path-exists-error :filesystem fs :path abs)
+          (overwrite ()
+            :report (lambda (s) (format s "Keep existing path ~A" abs))
+            (return-from fs-mkdir abs))))
       (return-from fs-mkdir abs))
     (let ((parent (fs-parent fs abs)))
       (if parents
           (unless (or (%pathname-root-p parent) (fs-directory-p fs parent))
             (fs-mkdir fs parent :parents t :exist-ok t))
           (unless (or (%pathname-root-p parent) (fs-directory-p fs parent))
-            (error 'path-not-found :filesystem fs :path abs
-                   :message "parent directory does not exist"))))
+            (%restart-create-parents fs abs))))
     (setf (gethash key (memory-fs-root fs)) :dir)
     abs))
 
 (defmethod fs-rmdir ((fs memory-filesystem) pathname)
   (let ((key (%mem-key fs (fs-absolute fs pathname))))
     (unless (fs-directory-p fs pathname)
-      (error 'path-not-found :filesystem fs :path pathname))
+      (return-from fs-rmdir
+        (%restart-path-not-found fs pathname
+                                 :message "directory does not exist"
+                                 :allow-create-file nil
+                                 :allow-create-directory t
+                                 :allow-ignore nil)))
     (when (fs-iterdir fs pathname)
-      (error 'path-error :filesystem fs :path pathname :message "directory not empty"))
+      (error 'directory-not-empty :filesystem fs :path pathname
+             :message "directory not empty"))
     (remhash key (memory-fs-root fs))
     t))
 
@@ -224,9 +241,14 @@
   (let* ((key (%mem-key fs (fs-absolute fs pathname)))
          (ent (gethash key (memory-fs-root fs))))
     (unless ent
-      (unless missing-ok
-        (error 'path-not-found :filesystem fs :path pathname))
-      (return-from fs-unlink nil))
+      (return-from fs-unlink
+        (if missing-ok
+            nil
+            (%restart-path-not-found fs pathname
+                                     :message "file does not exist"
+                                     :allow-create-file nil
+                                     :allow-create-directory nil
+                                     :allow-ignore t))))
     (when (eq ent :dir)
       (error 'path-error :filesystem fs :path pathname :message "is a directory"))
     (remhash key (memory-fs-root fs))
@@ -236,22 +258,40 @@
   (let* ((abs (fs-absolute fs pathname))
          (key (%mem-key fs abs)))
     (if (gethash key (memory-fs-root fs))
-        (unless exist-ok
-          (error 'path-exists-error :filesystem fs :path abs))
         (progn
-          (fs-mkdir fs (fs-parent fs abs) :parents t :exist-ok t)
+          (unless exist-ok
+            (restart-case
+                (error 'path-exists-error :filesystem fs :path abs)
+              (overwrite ()
+                :report (lambda (s) (format s "Keep existing file ~A" abs))
+                (return-from fs-touch abs))))
+          abs)
+        (progn
+          (let ((parent (fs-parent fs abs)))
+            (unless (or (%pathname-root-p parent) (fs-directory-p fs parent))
+              ;; default: create parents; also offer restart if someone forces otherwise
+              (fs-mkdir fs parent :parents t :exist-ok t)))
           (setf (gethash key (memory-fs-root fs))
-                (list :file (make-array 0 :element-type '(unsigned-byte 8)) (get-universal-time)))))
-    abs))
+                (list :file (make-array 0 :element-type '(unsigned-byte 8)) (get-universal-time)))
+          abs))))
 
 (defmethod fs-rename ((fs memory-filesystem) source target &key (replace t))
   (let* ((sk (%mem-key fs (fs-absolute fs source)))
          (tk (%mem-key fs (fs-absolute fs target)))
          (root (memory-fs-root fs))
          (ent (gethash sk root)))
-    (unless ent (error 'path-not-found :filesystem fs :path source))
+    (unless ent
+      (%restart-path-not-found fs source
+                               :message "rename source does not exist"
+                               :allow-create-file nil
+                               :allow-create-directory nil
+                               :allow-ignore nil))
     (when (and (not replace) (gethash tk root))
-      (error 'path-exists-error :filesystem fs :path target))
+      (restart-case
+          (error 'path-exists-error :filesystem fs :path target)
+        (overwrite ()
+          :report (lambda (s) (format s "Replace existing ~A" target))
+          (return-from fs-rename (fs-rename fs source target :replace t)))))
     (when (string= sk tk)
       (return-from fs-rename (fs-parse fs tk)))
     (when (eq ent :dir)
@@ -279,9 +319,18 @@
          (tk (%mem-key fs (fs-absolute fs target)))
          (root (memory-fs-root fs))
          (ent (gethash sk root)))
-    (unless ent (error 'path-not-found :filesystem fs :path source))
+    (unless ent
+      (%restart-path-not-found fs source
+                               :message "copy source does not exist"
+                               :allow-create-file nil
+                               :allow-create-directory nil
+                               :allow-ignore nil))
     (when (and (not replace) (gethash tk root))
-      (error 'path-exists-error :filesystem fs :path target))
+      (restart-case
+          (error 'path-exists-error :filesystem fs :path target)
+        (overwrite ()
+          :report (lambda (s) (format s "Replace existing ~A" target))
+          (return-from fs-copy (fs-copy fs source target :replace t)))))
     (cond ((eq ent :dir)
            (setf (gethash tk root) :dir)
            (let* ((src-prefix (if (string= sk "/") "/" (concatenate 'string sk "/")))
@@ -319,12 +368,17 @@
     (fs-parse fs (second ent))))
 
 (defmethod fs-read-bytes ((fs memory-filesystem) pathname)
-  (let* ((key (%mem-follow-symlink fs (%mem-key fs (fs-absolute fs pathname))))
+  (let* ((abs (fs-absolute fs pathname))
+         (key (%mem-follow-symlink fs (%mem-key fs abs)))
          (ent (gethash key (memory-fs-root fs))))
     (unless (and (consp ent) (eq (car ent) :file))
-      (error 'path-not-found :filesystem fs :path pathname))
+      (return-from fs-read-bytes
+        (%restart-path-not-found fs abs
+                                 :message "file does not exist"
+                                 :allow-create-file t
+                                 :allow-create-directory nil
+                                 :allow-ignore nil)))
     (copy-seq (second ent))))
-
 (defmethod fs-write-bytes ((fs memory-filesystem) pathname bytes
                            &key (append nil) if-exists if-does-not-exist)
   (declare (ignore if-exists if-does-not-exist))

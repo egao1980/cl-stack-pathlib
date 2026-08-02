@@ -7,7 +7,7 @@ Python **pathlib** / Java **NIO.2 Path+Files+FileSystem** feature shape, Common 
 - pathnames under the hood (UIOP)
 - `path` objects bound to a `filesystem`
 - keyword-heavy facade (`join`, `absolute` vs `resolve`, `read-text`, …)
-- conditions, not status codes
+- conditions + restarts (`create-parents`, `create-file`, `overwrite`, …)
 - escape hatch: `path-pathname`
 
 ## Why
@@ -29,6 +29,13 @@ Virtual FS support: specialize `filesystem` (shipped: `local-filesystem`, `memor
 (with-filesystem ((make-memory-filesystem))
   (write-text "/a/b.txt" "hi")
   (read-text "/a/b.txt"))
+
+;; recoveries (CL restarts)
+(with-auto-create-parents
+  (mkdir "/deep/nested" :parents nil))   ; CREATE-PARENTS + RETRY
+
+(with-auto-create-file
+  (read-bytes "/new.txt"))               ; CREATE-FILE (empty) + RETRY
 ```
 
 Nickname: `stack-pathlib` only — not `path` (clashes with cl-fad / filepaths).

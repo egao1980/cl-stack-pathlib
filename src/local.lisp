@@ -36,8 +36,12 @@ UIOP TRUENAMIZE alone is not enough — it succeeds for missing leaves."
   (let* ((abs (fs-absolute fs pathname))
          (true (uiop:probe-file* abs :truename t)))
     (cond (true true)
-          (strict (error 'path-not-found :filesystem fs :path abs
-                         :message "path does not exist"))
+          (strict
+           (%restart-path-not-found fs abs
+                                    :message "path does not exist"
+                                    :allow-create-file t
+                                    :allow-create-directory t
+                                    :allow-ignore nil))
           (t (or (ignore-errors (uiop:truenamize abs)) abs)))))
 
 (defmethod fs-normpath ((fs local-filesystem) pathname)
@@ -162,7 +166,11 @@ UIOP TRUENAMIZE alone is not enough — it succeeds for missing leaves."
   (let ((dir (uiop:ensure-directory-pathname (fs-parse fs pathname))))
     (cond ((uiop:directory-exists-p dir)
            (unless exist-ok
-             (error 'path-exists-error :filesystem fs :path dir))
+             (restart-case
+                 (error 'path-exists-error :filesystem fs :path dir)
+               (overwrite ()
+                 :report (lambda (s) (format s "Keep existing directory ~A" dir))
+                 dir)))
            dir)
           (parents
            (ensure-directories-exist (merge-pathnames (make-pathname :name "x") dir))
@@ -170,44 +178,87 @@ UIOP TRUENAMIZE alone is not enough — it succeeds for missing leaves."
           (t
            (let ((parent (uiop:pathname-parent-directory-pathname dir)))
              (unless (uiop:directory-exists-p parent)
-               (error 'path-not-found :filesystem fs :path dir
-                      :message "parent directory does not exist"))
+               (%restart-create-parents fs dir))
              #+sbcl (sb-posix:mkdir (namestring dir) #o755)
-             #-sbcl (uiop:run-program (list "mkdir" (uiop:unix-namestring dir)) :ignore-error-status nil))
+             #-sbcl (uiop:run-program (list "mkdir" (uiop:unix-namestring dir))
+                                      :ignore-error-status nil))
            dir))))
 
 (defmethod fs-rmdir ((fs local-filesystem) pathname)
   (uiop:delete-empty-directory (uiop:ensure-directory-pathname (fs-parse fs pathname))))
 
 (defmethod fs-unlink ((fs local-filesystem) pathname &key (missing-ok nil))
-  (handler-case (delete-file (fs-parse fs pathname))
-    (file-error (c)
-      (unless missing-ok (error c)))))
+  (let ((pn (fs-parse fs pathname)))
+    (handler-case (progn (delete-file pn) t)
+      (file-error ()
+        (return-from fs-unlink
+          (if missing-ok
+              nil
+              (%restart-path-not-found fs pn
+                                       :message "file does not exist"
+                                       :allow-create-file nil
+                                       :allow-create-directory nil
+                                       :allow-ignore t)))))))
 
 (defmethod fs-touch ((fs local-filesystem) pathname &key (exist-ok t))
   (let ((pn (fs-parse fs pathname)))
-    (if (uiop:file-exists-p pn)
-        (unless exist-ok
-          (error 'path-exists-error :filesystem fs :path pn))
-        (with-open-file (s pn :direction :output :if-exists :error :if-does-not-exist :create)))
-    pn))
+    (cond ((uiop:file-exists-p pn)
+           (unless exist-ok
+             (restart-case
+                 (error 'path-exists-error :filesystem fs :path pn)
+               (overwrite ()
+                 :report (lambda (s) (format s "Keep existing file ~A" pn))
+                 pn)))
+           pn)
+          (t
+           (let ((parent (uiop:pathname-parent-directory-pathname pn)))
+             (unless (or (null parent) (uiop:directory-exists-p parent))
+               (%restart-create-parents fs pn)))
+           (handler-case
+               (with-open-file (s pn :direction :output :if-exists :error
+                                  :if-does-not-exist :create)
+                 pn)
+             (file-error ()
+               (%restart-create-parents fs pn)))))))
 
 (defmethod fs-rename ((fs local-filesystem) source target &key (replace t))
   (let ((from (fs-parse fs source))
         (to (fs-parse fs target)))
+    (unless (fs-exists-p fs from)
+      (%restart-path-not-found fs from
+                               :message "rename source does not exist"
+                               :allow-create-file nil
+                               :allow-create-directory nil
+                               :allow-ignore nil))
     (when (and (not replace) (fs-exists-p fs to))
-      (error 'path-exists-error :filesystem fs :path to))
+      (restart-case
+          (error 'path-exists-error :filesystem fs :path to)
+        (overwrite ()
+          :report (lambda (s) (format s "Replace existing ~A" to))
+          (return-from fs-rename (fs-rename fs from to :replace t)))))
     (rename-file from to)
     to))
 
 (defmethod fs-copy ((fs local-filesystem) source target &key (replace t))
   (let ((from (fs-parse fs source))
         (to (fs-parse fs target)))
+    (unless (fs-exists-p fs from)
+      (%restart-path-not-found fs from
+                               :message "copy source does not exist"
+                               :allow-create-file nil
+                               :allow-create-directory nil
+                               :allow-ignore nil))
     (when (and (not replace) (fs-exists-p fs to))
-      (error 'path-exists-error :filesystem fs :path to))
+      (restart-case
+          (error 'path-exists-error :filesystem fs :path to)
+        (overwrite ()
+          :report (lambda (s) (format s "Replace existing ~A" to))
+          (return-from fs-copy (fs-copy fs from to :replace t)))))
+    (let ((parent (uiop:pathname-parent-directory-pathname to)))
+      (unless (or (null parent) (uiop:directory-exists-p parent))
+        (%restart-create-parents fs to)))
     (uiop:copy-file from to)
     to))
-
 (defmethod fs-create-symlink ((fs local-filesystem) link target)
   #+sbcl
   (progn
@@ -224,24 +275,39 @@ UIOP TRUENAMIZE alone is not enough — it succeeds for missing leaves."
   (%unsupported fs 'fs-read-symlink pathname))
 
 (defmethod fs-read-bytes ((fs local-filesystem) pathname)
-  (with-open-file (s (fs-parse fs pathname) :direction :input
-                     :element-type '(unsigned-byte 8) :if-does-not-exist :error)
-    (let* ((len (file-length s))
-           (buf (make-array len :element-type '(unsigned-byte 8))))
-      (read-sequence buf s)
-      buf)))
+  (let ((pn (fs-parse fs pathname)))
+    (handler-case
+        (with-open-file (s pn :direction :input
+                           :element-type '(unsigned-byte 8) :if-does-not-exist :error)
+          (let* ((len (file-length s))
+                 (buf (make-array len :element-type '(unsigned-byte 8))))
+            (read-sequence buf s)
+            buf))
+      (file-error ()
+        (return-from fs-read-bytes
+          (%restart-path-not-found fs pn
+                                   :message "file does not exist"
+                                   :allow-create-file t
+                                   :allow-create-directory nil
+                                   :allow-ignore nil))))))
 
 (defmethod fs-write-bytes ((fs local-filesystem) pathname bytes
                            &key (append nil)
                                 (if-exists (if append :append :supersede))
                                 (if-does-not-exist :create))
-  (with-open-file (s (fs-parse fs pathname) :direction :output
-                     :element-type '(unsigned-byte 8)
-                     :if-exists if-exists
-                     :if-does-not-exist if-does-not-exist)
-    (write-sequence bytes s))
-  (fs-parse fs pathname))
-
+  (let ((pn (fs-parse fs pathname)))
+    (let ((parent (uiop:pathname-parent-directory-pathname pn)))
+      (unless (or (null parent) (uiop:directory-exists-p parent))
+        (%restart-create-parents fs pn)))
+    (handler-case
+        (with-open-file (s pn :direction :output
+                           :element-type '(unsigned-byte 8)
+                           :if-exists if-exists
+                           :if-does-not-exist if-does-not-exist)
+          (write-sequence bytes s))
+      (file-error ()
+        (%restart-create-parents fs pn)))
+    pn))
 (defmethod fs-make-temp ((fs local-filesystem) &key (directory nil) (prefix "cl-stack-") (suffix ""))
   (let* ((dir (uiop:ensure-directory-pathname
                (or directory (uiop:temporary-directory))))

@@ -23,5 +23,6 @@
                (:file "pure-path-test")
                (:file "boost-path-test")
                (:file "normalize-test")
-               (:file "fs-ops-test"))
+               (:file "fs-ops-test")
+               (:file "restarts-test"))
   :perform (test-op (o c) (symbol-call :rove :run c)))
