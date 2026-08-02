@@ -9,9 +9,14 @@
    (home :initform "/home" :accessor memory-fs-home))
   (:default-initargs :name "memory"))
 
+(defun %abs-posix-cwd (s)
+  (cond ((string= s "") "/")
+        ((char= (char s 0) #\/) s)
+        (t (format nil "/~A" (string-left-trim "/" s)))))
+
 (defun make-memory-filesystem (&key (cwd "/") (home "/home"))
   (let ((fs (make-instance 'memory-filesystem)))
-    (setf (memory-fs-cwd fs) cwd
+    (setf (memory-fs-cwd fs) (%abs-posix-cwd cwd)
           (memory-fs-home fs) home)
     (setf (gethash "/" (memory-fs-root fs)) :dir)
     (fs-mkdir fs home :parents t :exist-ok t)
@@ -253,6 +258,9 @@
       (let* ((src-prefix (if (string= sk "/") "/" (concatenate 'string sk "/")))
              (tgt-prefix (if (string= tk "/") "/" (concatenate 'string tk "/")))
              (updates '()))
+        (when (uiop:string-prefix-p src-prefix tgt-prefix)
+          (error 'path-error :filesystem fs :path source
+                 :message "cannot rename directory into its descendant"))
         (maphash (lambda (k v)
                    (when (and (uiop:string-prefix-p src-prefix k)
                               (not (string= k sk)))

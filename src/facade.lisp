@@ -27,18 +27,25 @@
   "Join like pathlib `/` — does not normalize `.` / `..` (use NORMPATH)."
   (let* ((p0 (ensure-path base))
          (fs (path-filesystem p0))
-         (acc (string-right-trim "/" (%designator-posix p0))))
+         (posix0 (%designator-posix p0))
+         (absolute-root-p (and (plusp (length posix0)) (char= (char posix0 0) #\/)
+                               (zerop (length (string-right-trim "/" posix0)))))
+         (acc (string-right-trim "/" posix0)))
     (dolist (part parts)
       (when part
         (let ((seg (%designator-posix part)))
           (setf acc
                 (if (and (plusp (length seg)) (char= (char seg 0) #\/))
-                    (string-right-trim "/" seg)
+                    (progn
+                      (setf absolute-root-p (zerop (length (string-right-trim "/" seg))))
+                      (string-right-trim "/" seg))
                     (let ((seg (string-left-trim "/" seg)))
                       (cond ((zerop (length acc)) (format nil "/~A" seg))
                             ((zerop (length seg)) acc)
                             (t (format nil "~A/~A" acc seg)))))))))
-    (%wrap fs (fs-parse fs (if (zerop (length acc)) "." acc)))))
+    (%wrap fs (fs-parse fs (cond ((zerop (length acc))
+                                  (if absolute-root-p "/" "."))
+                                 (t acc))))))
 
 (setf (fdefinition 'joinpath) (fdefinition 'join))
 
