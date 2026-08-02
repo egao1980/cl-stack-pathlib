@@ -218,8 +218,11 @@ UIOP TRUENAMIZE alone is not enough — it succeeds for missing leaves."
                (with-open-file (s pn :direction :output :if-exists :error
                                   :if-does-not-exist :create)
                  pn)
-             (file-error ()
-               (%restart-create-parents fs pn)))))))
+             (file-error (c)
+               (let ((parent (uiop:pathname-parent-directory-pathname pn)))
+                 (if (or (null parent) (uiop:directory-exists-p parent))
+                     (error c)
+                     (%restart-create-parents fs pn)))))))))
 
 (defmethod fs-rename ((fs local-filesystem) source target &key (replace t))
   (let ((from (fs-parse fs source))
