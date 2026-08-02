@@ -10,9 +10,7 @@
 (defmethod fs-parse ((fs local-filesystem) designator &key directory)
   (let ((pn (etypecase designator
               (pathname designator)
-              (string (uiop:ensure-pathname designator
-                                            :want-pathname t
-                                            :defaults (uiop:getcwd)))
+              (string (%parse-posix designator))
               (path (path-pathname designator)))))
     (if directory (uiop:ensure-directory-pathname pn) pn)))
 
@@ -22,7 +20,7 @@
    (uiop:ensure-directory-pathname (fs-parse fs base))))
 
 (defmethod fs-parent ((fs local-filesystem) pathname)
-  (uiop:pathname-parent-directory-pathname (fs-parse fs pathname)))
+  (%logical-parent (fs-parse fs pathname)))
 
 (defmethod fs-name ((fs local-filesystem) pathname)
   (%file-namestring* (fs-parse fs pathname)))
@@ -33,10 +31,14 @@
     (if (uiop:absolute-pathname-p pn) pn (uiop:merge-pathnames* pn base))))
 
 (defmethod fs-resolve ((fs local-filesystem) pathname &key (strict t))
-  (let ((abs (fs-absolute fs pathname)))
-    (handler-case (uiop:truenamize abs)
-      (file-error (c)
-        (if strict (error c) abs)))))
+  "Resolve to a physical path. STRICT signals if the leaf does not exist.
+UIOP TRUENAMIZE alone is not enough — it succeeds for missing leaves."
+  (let* ((abs (fs-absolute fs pathname))
+         (true (uiop:probe-file* abs :truename t)))
+    (cond (true true)
+          (strict (error 'path-not-found :filesystem fs :path abs
+                         :message "path does not exist"))
+          (t (or (ignore-errors (uiop:truenamize abs)) abs)))))
 
 (defmethod fs-normpath ((fs local-filesystem) pathname)
   "Collapse `.` / `..` in PATHNAME (NIO normalize / pathlib-ish)."

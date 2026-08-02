@@ -47,7 +47,7 @@
 (defmethod fs-parse ((fs memory-filesystem) designator &key directory)
   (let ((pn (etypecase designator
               (pathname designator)
-              (string (uiop:parse-unix-namestring designator))
+              (string (%parse-posix designator))
               (path (path-pathname designator)))))
     (if directory (uiop:ensure-directory-pathname pn) pn)))
 
@@ -57,7 +57,7 @@
    (uiop:ensure-directory-pathname (fs-parse fs base))))
 
 (defmethod fs-parent ((fs memory-filesystem) pathname)
-  (uiop:pathname-parent-directory-pathname (fs-parse fs pathname)))
+  (%logical-parent (fs-parse fs pathname)))
 
 (defmethod fs-name ((fs memory-filesystem) pathname)
   (%file-namestring* (fs-parse fs pathname)))
@@ -155,20 +155,25 @@
     (nreverse out)))
 
 (defmethod fs-glob ((fs memory-filesystem) pathname pattern &key recursive)
-  (let* ((base (fs-absolute fs pathname))
-         (prefix (%mem-key fs base))
-         (prefix (if (string= prefix "/") "/" (concatenate 'string prefix "/")))
-         (match-pattern (if recursive (format nil "**/~A" pattern) pattern))
+  (let* ((base-key (%mem-key fs (fs-absolute fs pathname)))
+         (prefix (if (string= base-key "/")
+                     "/"
+                     (concatenate 'string base-key "/")))
          (out '()))
-    (maphash (lambda (k v)
-               (declare (ignore v))
-               (when (uiop:string-prefix-p prefix k)
-                 (let ((relative (subseq k (length prefix))))
-                   (when (and (plusp (length relative))
-                              (or recursive (find #\/ pattern) (not (find #\/ relative)))
-                              (pathname-match-p relative match-pattern))
-                     (push (fs-parse fs k) out)))))
-             (memory-fs-root fs))
+    (maphash
+     (lambda (k v)
+       (declare (ignore v))
+       (when (uiop:string-prefix-p prefix k)
+         (let* ((rel (subseq k (length prefix)))
+                (nm (file-namestring k))
+                (nested-p (find #\/ rel)))
+           (when (and (plusp (length rel))
+                      (or recursive (find #\/ pattern) (not nested-p))
+                      (if (find #\/ pattern)
+                          (pathname-match-p rel (%wild-pattern pattern))
+                          (and nm (%name-matches-p nm pattern))))
+             (push (fs-parse fs k) out)))))
+     (memory-fs-root fs))
     (nreverse out)))
 
 (defmethod fs-walk ((fs memory-filesystem) pathname &key (top-down t) follow-symlinks)

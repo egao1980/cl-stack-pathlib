@@ -19,5 +19,9 @@
   :depends-on ("cl-stack-pathlib" "rove")
   :pathname "tests"
   :serial t
-  :components ((:file "pathlib-test"))
+  :components ((:file "package")
+               (:file "pure-path-test")
+               (:file "boost-path-test")
+               (:file "normalize-test")
+               (:file "fs-ops-test"))
   :perform (test-op (o c) (symbol-call :rove :run c)))

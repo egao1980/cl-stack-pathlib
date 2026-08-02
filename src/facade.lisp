@@ -16,13 +16,29 @@
       (ensure-path designator :filesystem filesystem :directory directory)
       (ensure-path designator :directory directory)))
 
+(defun %designator-posix (designator)
+  (etypecase designator
+    (path (as-posix designator))
+    (pathname (or (uiop:unix-namestring designator) (namestring designator)))
+    (string designator)
+    (symbol (string designator))))
+
 (defun join (base &rest parts)
+  "Join like pathlib `/` — does not normalize `.` / `..` (use NORMPATH)."
   (let* ((p0 (ensure-path base))
          (fs (path-filesystem p0))
-         (acc (path-pathname p0)))
-    (dolist (part parts (%wrap fs acc))
+         (acc (string-right-trim "/" (%designator-posix p0))))
+    (dolist (part parts)
       (when part
-        (setf acc (fs-join fs acc part))))))
+        (let ((seg (%designator-posix part)))
+          (setf acc
+                (if (and (plusp (length seg)) (char= (char seg 0) #\/))
+                    (string-right-trim "/" seg)
+                    (let ((seg (string-left-trim "/" seg)))
+                      (cond ((zerop (length acc)) (format nil "/~A" seg))
+                            ((zerop (length seg)) acc)
+                            (t (format nil "~A/~A" acc seg)))))))))
+    (%wrap fs (fs-parse fs (if (zerop (length acc)) "." acc)))))
 
 (setf (fdefinition 'joinpath) (fdefinition 'join))
 
@@ -51,9 +67,13 @@
 
 (defun parent (designator)
   (let ((p (ensure-path designator)))
-    (%wrap (path-filesystem p) (fs-parent (path-filesystem p) (path-pathname p)))))
+    (%wrap (path-filesystem p)
+           (uiop:ensure-directory-pathname
+            (%logical-parent (path-pathname p))))))
 
 (defun parents (designator)
+  "Logical ancestors, including the filesystem root (pathlib .parents).
+Stops when PARENT is a fixed point (root), so broken backends cannot loop."
   (loop named walk
         with p = (parent designator)
         with acc = '()
@@ -154,7 +174,12 @@
          (equal (%tail a (length b)) b))))
 
 (defun match-p (designator pattern)
-  (pathname-match-p (%pn designator) (uiop:parse-unix-namestring pattern)))
+  "Pathlib-like match: PATTERN against the full path or the final name."
+  (let ((nm (name designator))
+        (pn (%pn designator))
+        (wild (%wild-pattern pattern)))
+    (or (and nm (%name-matches-p nm pattern))
+        (pathname-match-p pn wild))))
 
 (defun absolute (designator &key (defaults nil defaults-p))
   (let ((p (ensure-path designator)))
@@ -195,7 +220,7 @@
   (let ((pn (%pn designator)))
     (ecase style
       ((:native) (namestring pn))
-      ((:posix :codegen) (or (uiop:unix-namestring pn) (namestring pn))))))
+      ((:posix :codegen) (%pathname-as-posix pn)))))
 
 (defun as-posix (designator)
   (as-namestring designator :style :posix))
