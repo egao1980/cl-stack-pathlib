@@ -263,18 +263,19 @@ UIOP TRUENAMIZE alone is not enough — it succeeds for missing leaves."
     (uiop:copy-file from to)
     to))
 (defmethod fs-create-symlink ((fs local-filesystem) link target)
-  #+sbcl
+  ;; sb-posix:symlink is Unix-only (absent on Windows SBCL).
+  #+(and sbcl unix)
   (progn
     (sb-posix:symlink (namestring (fs-parse fs target))
                       (namestring (fs-parse fs link)))
     (fs-parse fs link))
-  #-sbcl
+  #-(and sbcl unix)
   (%unsupported fs 'fs-create-symlink link))
 
 (defmethod fs-read-symlink ((fs local-filesystem) pathname)
-  #+sbcl
+  #+(and sbcl unix)
   (pathname (sb-posix:readlink (namestring (fs-parse fs pathname))))
-  #-sbcl
+  #-(and sbcl unix)
   (%unsupported fs 'fs-read-symlink pathname))
 
 (defmethod fs-read-bytes ((fs local-filesystem) pathname)
