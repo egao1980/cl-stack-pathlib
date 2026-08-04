@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  SBCL_VERSION: 2.4.11
+  SBCL_VERSION: 2.6.7
   ROSWELL_VERSION: "26.02.116"
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
