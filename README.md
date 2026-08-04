@@ -61,3 +61,14 @@ Default `*filesystem*` is `local-filesystem`.
 sbcl --eval '(asdf:load-asd "cl-stack-pathlib.asd")' \
      --eval '(asdf:test-system "cl-stack-pathlib")'
 ```
+
+## Publish
+
+Source-only OCI publish is centralized in [`cl-stack-systems`](https://github.com/egao1980/cl-stack-systems)
+(`imports/cl-stack-pathlib/qlfile` pin + shared `publish.yml`). Packaging metadata lives in the `.asd`
+(`auto-package-spec`):
+
+```bash
+gh workflow run publish.yml -R egao1980/cl-stack-systems -f import=cl-stack-pathlib
+```
+
