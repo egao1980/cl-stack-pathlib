@@ -22,57 +22,25 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install Roswell (Unix)
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          curl -sL https://raw.githubusercontent.com/roswell/roswell/master/scripts/install-for-ci.sh | bash
-          echo "$HOME/.roswell/bin" >> "$GITHUB_PATH"
+      - uses: egao1980/cl-repository/.github/actions/setup-client@main
 
-      - name: Install Roswell (Windows)
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          curl -sL "https://github.com/roswell/roswell/releases/download/v${ROSWELL_VERSION}/roswell_${ROSWELL_VERSION}_amd64.zip" \
-            -o /tmp/roswell.zip
-          rm -rf /c/roswell
-          mkdir -p /c/roswell
-          unzip -qo /tmp/roswell.zip -d /c/roswell
-          echo "/c/roswell/roswell" >> "$GITHUB_PATH"
-          echo "$HOME/.roswell/bin" >> "$GITHUB_PATH"
-          /c/roswell/roswell/ros.exe version
+      - uses: egao1980/cl-repository/.github/actions/setup-roswell@main
+        with:
+          sbcl-version: ${{ env.SBCL_VERSION }}
+          roswell-version: ${{ env.ROSWELL_VERSION }}
 
-      - name: Install SBCL
+      - name: cl-repo install deps
         shell: bash
         run: |
-          ros install "sbcl-bin/$SBCL_VERSION"
-          ros use "sbcl-bin/$SBCL_VERSION"
+          ros -l scripts/ci-install.lisp -q
 
-      - name: Install dependencies (Unix)
-        if: runner.os != 'Windows'
+      - name: Test
         shell: bash
         run: |
-          ros install qlot
-          qlot install
-
-      - name: Install dependencies (Windows)
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          ros install rove
-
-      - name: Test (Unix)
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          qlot exec ros -S . -e '(asdf:test-system "cl-stack-pathlib")'
-
-      - name: Test (Windows)
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          export CL_SOURCE_REGISTRY="$(pwd)//:"
-          ros -S . -e '(asdf:test-system "cl-stack-pathlib")' -q
+          ros -l scripts/ci-test.lisp -q
