@@ -17,6 +17,40 @@
 (defmacro with-filesystem ((fs) &body body)
   `(let ((*filesystem* ,fs)) ,@body))
 
+;;; URI scheme dispatch — "file://…", "memory://…", "zip://archive!/entry".
+;;; Backends register a handler that returns a PATH for the full URI string.
+
+(defvar *uri-schemes* (make-hash-table :test #'equalp)
+  "SCHEME-STRING → (lambda (uri) path).")
+
+(defun register-uri-scheme (scheme handler)
+  "Register HANDLER for URI SCHEME (e.g. \"zip\").
+   HANDLER is a function of the full URI string that returns a PATH."
+  (check-type scheme string)
+  (check-type handler function)
+  (setf (gethash scheme *uri-schemes*) handler)
+  scheme)
+
+(defun uri-scheme-handler (scheme)
+  (gethash scheme *uri-schemes*))
+
+(defun list-uri-schemes ()
+  (loop for k being the hash-keys of *uri-schemes* collect k))
+
+(defun uri-scheme (string)
+  "Return the RFC 3986 scheme of STRING, or NIL.
+   Rejects single-letter schemes so Windows `C:\\…` is not a URI."
+  (when (stringp string)
+    (let ((colon (position #\: string)))
+      (when (and colon (>= colon 2) (<= colon 16)
+                 (< (1+ colon) (length string))
+                 (alpha-char-p (char string 0))
+                 (loop for i from 1 below colon
+                       always (let ((c (char string i)))
+                                (or (alphanumericp c)
+                                    (find c "+-." :test #'char=)))))
+        (subseq string 0 colon)))))
+
 (defgeneric fs-parse (fs designator &key directory)
   (:documentation "Parse DESIGNATOR into a pathname identity for FS."))
 

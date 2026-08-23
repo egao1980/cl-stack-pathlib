@@ -14,7 +14,7 @@ Python **pathlib** / Java **NIO.2 Path+Files+FileSystem** feature shape, Common 
 
 OCI install roots and generated `cl-repo-init` must keep path identity (`/tmp` ≠ `/private/tmp`). That is `absolute` (no symlink resolve), not `resolve` (NIO `toRealPath` / pathlib `resolve`).
 
-Virtual FS support: specialize `filesystem` (shipped: `local-filesystem`, `memory-filesystem`; zip/OCI overlays later).
+Virtual FS support: specialize `filesystem` (shipped: `local-filesystem`, `memory-filesystem`, `zip-filesystem`). URI schemes: `file://`, `zip://` (RFC 8089 archive path + `!/` entry: `zip:///tmp/data.zip!/x`, `zip:///C:/app/data.zip!/x`).
 
 ## Quick start
 
@@ -36,6 +36,12 @@ Virtual FS support: specialize `filesystem` (shipped: `local-filesystem`, `memor
 
 (with-auto-create-file
   (read-bytes "/new.txt"))               ; CREATE-FILE (empty) + RETRY
+
+;; zip:// — archive as a filesystem (read-only; stored + deflate)
+(write-zip-file "/tmp/data.zip" '(("countries/DE.sexp" "(:code \"DE\")")))
+(read-text "zip:///tmp/data.zip!/countries/DE.sexp")
+(read-text "zip:///C:/app/data.zip!/countries/DE.sexp") ; Windows — keep the drive
+(join (zip-path "/tmp/data.zip") "countries/DE.sexp")
 ```
 
 Nickname: `stack-pathlib` only — not `path` (clashes with cl-fad / filepaths).

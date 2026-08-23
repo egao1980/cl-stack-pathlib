@@ -9,6 +9,10 @@
    #:filesystem-separator
    #:*filesystem*
    #:with-filesystem
+   #:register-uri-scheme
+   #:uri-scheme-handler
+   #:list-uri-schemes
+   #:uri-scheme
    ;; protocol generics — specialize per backend
    #:fs-parse
    #:fs-join
@@ -48,6 +52,15 @@
    #:make-local-filesystem
    #:memory-filesystem
    #:make-memory-filesystem
+   #:zip-filesystem
+   #:zip-filesystem-p
+   #:zip-filesystem-archive
+   #:make-zip-filesystem
+   #:zip-path
+   #:write-zip-bytes
+   #:write-zip-file
+   #:zip-tree
+   #:clear-zip-filesystem-cache
    ;; --- path value (bound to a filesystem) ---
    #:path
    #:path-p
