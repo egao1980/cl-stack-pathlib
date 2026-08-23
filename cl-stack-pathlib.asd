@@ -1,5 +1,5 @@
 (defsystem "cl-stack-pathlib"
-  :version "0.2.0"
+  :version "0.2.1"
   :description "CLOS paths + pluggable filesystems (pathlib/NIO-style) for cl-stack"
   :author "egao1980"
   :license "MIT"

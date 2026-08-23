@@ -116,6 +116,15 @@
   (ok (string= (as-posix "rel/x") "rel/x"))
   (ok (string= (as-posix "/a/b/../c") "/a/b/../c")))
 
+(deftest windows-drive-posix-roundtrip
+  "RFC 8089: as-posix keeps the drive so join does not hop to another volume."
+  (dolist (s '("/C:/Users/foo/data.zip" "/C:/app/data/countries/DE.sexp"))
+    (let ((pn (cl-stack-pathlib::%posix-string-to-pathname s)))
+      (ok (string-equal (string (pathname-device pn)) "C") s)
+      (ok (string= (cl-stack-pathlib::%pathname-as-posix pn) s) s)))
+  (ok (string= (as-posix (join (path "/C:/tmp/data/" :directory t) "countries/ZZ.sexp"))
+               "/C:/tmp/data/countries/ZZ.sexp")))
+
 (deftest under-join
   (ok (posix= (under "/opt/pkg/" "native/lib.so") "/opt/pkg/native/lib.so"))
   (ok (posix= (under (path "/opt/pkg/" :directory t) "x") "/opt/pkg/x")))
