@@ -31,7 +31,9 @@
       (error 'path-error :message "*filesystem* is unbound; load local backend or bind with-filesystem")))
 
 (defun ensure-path (designator &key (filesystem nil filesystem-p) directory)
-  "Coerce string / pathname / path → PATH on FILESYSTEM (default *filesystem*)."
+  "Coerce string / pathname / path → PATH on FILESYSTEM (default *filesystem*).
+   Strings with a registered URI scheme (`file:`, `zip:`, …) are dispatched
+   unless :FILESYSTEM is supplied explicitly."
   (cond
     ((path-p designator)
      (when (and filesystem-p (not (eq filesystem (path-filesystem designator))))
@@ -41,6 +43,25 @@
          (make-path (uiop:ensure-directory-pathname (path-pathname designator))
                     :filesystem (path-filesystem designator))
          designator))
+    ((and (not filesystem-p)
+          (stringp designator)
+          (let ((scheme (uri-scheme designator)))
+            (and scheme (uri-scheme-handler scheme))))
+     (let ((p (funcall (uri-scheme-handler (uri-scheme designator)) designator)))
+       (unless (path-p p)
+         (error 'path-error :path designator
+                :message (format nil "URI handler for ~A did not return a path"
+                                 (uri-scheme designator))))
+       (if directory
+           (make-path (uiop:ensure-directory-pathname (path-pathname p))
+                      :filesystem (path-filesystem p))
+           p)))
+    ((and (not filesystem-p)
+          (stringp designator)
+          (uri-scheme designator))
+     (error 'path-error :path designator
+            :message (format nil "unknown URI scheme ~S (known: ~{~A~^, ~})"
+                             (uri-scheme designator) (list-uri-schemes))))
     (t
      (let* ((fs (if filesystem-p filesystem (%current-fs)))
             (pn (fs-parse fs designator :directory directory)))

@@ -331,4 +331,22 @@ UIOP TRUENAMIZE alone is not enough — it succeeds for missing leaves."
 (defmethod fs-as-uri ((fs local-filesystem) pathname)
   (format nil "file://~A" (uiop:unix-namestring (fs-absolute fs pathname))))
 
-(setf *filesystem* (make-local-filesystem))
+(defvar *local-filesystem* (make-local-filesystem)
+  "Process-wide local FS used by file:// URIs and the default *FILESYSTEM*.")
+
+(defun %parse-file-uri (uri)
+  (let* ((rest (if (and (>= (length uri) 7)
+                        (string-equal (subseq uri 0 7) "file://"))
+                   (subseq uri 7)
+                   uri))
+         (path (cond ((and (>= (length rest) 9)
+                           (string-equal (subseq rest 0 9) "localhost"))
+                      (subseq rest 9))
+                     (t rest))))
+    (when (zerop (length path))
+      (error 'path-error :path uri :message "file:// URI missing path"))
+    (make-path (fs-parse *local-filesystem* path) :filesystem *local-filesystem*)))
+
+(register-uri-scheme "file" #'%parse-file-uri)
+
+(setf *filesystem* *local-filesystem*)
