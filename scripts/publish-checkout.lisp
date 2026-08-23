@@ -24,8 +24,11 @@
   (or (uiop:getenv name) default))
 
 (let* ((system-name (env "PKG_SYSTEM" "cl-stack-pathlib"))
-       (version (or (env "PKG_VERSION")
-                    (asdf:component-version (asdf:find-system system-name))))
+       ;; workflow_dispatch default "" is truthy — treat blank as missing
+       (version (let ((v (env "PKG_VERSION")))
+                  (if (and v (plusp (length v)))
+                      v
+                      (asdf:component-version (asdf:find-system system-name)))))
        (registry-url (env "OCI_REGISTRY" "ghcr.io"))
        (namespace (string-downcase (env "OCI_NAMESPACE" "egao1980/cl-systems")))
        (auth (cl-oci-client/auth:make-auth-config
