@@ -61,6 +61,22 @@
         (ok (= 2 (length hits)))
         (ok (every (lambda (s) (search ".sexp" s)) hits))))))
 
+(deftest local-glob-star-extension
+  "SBCL DIRECTORY needs :WILD, not a literal * name."
+  (uiop:with-temporary-file (:pathname tmp :keep t)
+    (delete-file tmp)
+    (let ((dir (uiop:ensure-directory-pathname tmp)))
+      (unwind-protect
+           (progn
+             (ensure-directories-exist dir)
+             (write-text (merge-pathnames "a.sexp" dir) "a")
+             (write-text (merge-pathnames "b.sexp" dir) "b")
+             (write-text (merge-pathnames "c.txt" dir) "c")
+             (let ((hits (mapcar #'name (glob dir "*.sexp"))))
+               (ok (= 2 (length hits)))
+               (ok (find "a.sexp" hits :test #'string=))))
+        (uiop:delete-directory-tree dir :validate t :if-does-not-exist :ignore)))))
+
 (deftest zip-tree-roundtrip
   (uiop:with-temporary-file (:pathname dir :keep t)
     (delete-file dir)

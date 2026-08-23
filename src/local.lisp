@@ -143,10 +143,11 @@ UIOP TRUENAMIZE alone is not enough — it succeeds for missing leaves."
 (defmethod fs-glob ((fs local-filesystem) pathname pattern &key recursive)
   (let* ((base (uiop:ensure-directory-pathname (fs-absolute fs pathname)))
          (pat (if recursive
-                  (merge-pathnames (uiop:parse-unix-namestring
-                                    (format nil "**/~A" pattern))
-                                   base)
-                  (merge-pathnames (uiop:parse-unix-namestring pattern) base))))
+                  (merge-pathnames
+                   (make-pathname :directory '(:relative :wild-inferiors)
+                                  :defaults (%wild-pattern pattern))
+                   base)
+                  (merge-pathnames (%wild-pattern pattern) base))))
     (directory pat)))
 
 (defmethod fs-walk ((fs local-filesystem) pathname &key (top-down t) (follow-symlinks nil))
