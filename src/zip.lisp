@@ -2,10 +2,13 @@
 
 ;;; Read-only ZIP filesystem + zip:// URI.
 ;;;
-;;;   zip:///abs/archive.zip!/internal/path
-;;;   zip://rel/archive.zip!/internal/path
+;;; Archive half is an RFC 8089 path-absolute (VFS / jar:file: shape):
+;;;   zip:///tmp/data.zip!/countries/DE.sexp
+;;;   zip:///C:/Users/foo/data.zip!/countries/DE.sexp
 ;;;
-;;; Entries are posix paths rooted at / inside the archive.
+;;; Also accepted: zip://C:/… (do not treat C as host), zip:file:///C:/…!/…
+;;; Never uiop:unix-namestring the archive — it drops the drive letter.
+;;; Entries are posix paths rooted at / inside the archive (APPNOTE: / only, no drive).
 ;;; Method 0 (stored) and 8 (deflate via chipz).
 
 (defparameter +zip-local-sig+ #x04034b50)
@@ -130,36 +133,123 @@
         (unless (gethash s table)
           (setf (gethash s table) :dir))))))
 
+(defun %pct-decode (s)
+  (with-output-to-string (out)
+    (loop with i = 0
+          while (< i (length s))
+          do (let ((c (char s i)))
+               (if (and (char= c #\%) (<= (+ i 3) (length s)))
+                   (let ((code (ignore-errors
+                                 (parse-integer s :start (1+ i) :end (+ i 3) :radix 16))))
+                     (if code
+                         (progn (write-char (code-char code) out) (incf i 3))
+                         (progn (write-char c out) (incf i))))
+                   (progn (write-char c out) (incf i)))))))
+
+(defun %pct-encode-archive (s)
+  (with-output-to-string (out)
+    (loop for c across s
+          do (if (or (char= c #\%) (char= c #\!) (char= c #\Space)
+                     (char= c #\#) (char= c #\?))
+                 (format out "%~2,'0X" (char-code c))
+                 (write-char c out)))))
+
+(defun %drive-letter-prefix (s)
+  "If S is C:… or /C:… (colon or historic |), return (values DRIVE rest)."
+  (flet ((drive-at (i)
+           (and (< (1+ i) (length s))
+                (alpha-char-p (char s i))
+                (find (char s (1+ i)) ":|"))))
+    (cond ((and (plusp (length s)) (char= (char s 0) #\/) (drive-at 1))
+           (values (char-upcase (char s 1)) (subseq s 3)))
+          ((drive-at 0)
+           (values (char-upcase (char s 0)) (subseq s 2)))
+          (t (values nil s)))))
+
+(defun %normalize-archive-string (s)
+  "Archive half of a zip: URI → native namestring (C:/… or /tmp/…).
+   Accepts file: prefix, empty authority, /C:/ and C:/ (RFC 8089)."
+  (let ((s (%pct-decode (substitute #\/ #\\ (string s)))))
+    (when (and (>= (length s) 5) (string-equal (subseq s 0 5) "file:"))
+      (setf s (subseq s 5)))
+    (when (and (>= (length s) 2) (char= (char s 0) #\/) (char= (char s 1) #\/))
+      (cond ((and (>= (length s) 3) (char= (char s 2) #\/))
+             (setf s (subseq s 2)))
+            (t
+             (let ((rest (subseq s 2)))
+               (setf s
+                     (if (nth-value 0 (%drive-letter-prefix rest))
+                         rest
+                         (let ((slash (position #\/ rest)))
+                           (if (and slash
+                                    (member (subseq rest 0 slash)
+                                            '("" "localhost") :test #'string-equal))
+                               (subseq rest slash)
+                               (if slash (subseq rest slash) rest)))))))))
+    (multiple-value-bind (drive rest) (%drive-letter-prefix s)
+      (if drive
+          (format nil "~A:~A" drive
+                  (cond ((zerop (length rest)) "/")
+                        ((char= (char rest 0) #\/) rest)
+                        (t (concatenate 'string "/" rest))))
+          s))))
+
+(defun %archive-pathname (archive)
+  "Native pathname we can OPEN. Never unix-namestring (drops the drive)."
+  (etypecase archive
+    (pathname
+     (uiop:ensure-absolute-pathname archive (uiop:getcwd)))
+    (string
+     (uiop:ensure-absolute-pathname
+      (uiop:parse-native-namestring (%normalize-archive-string archive))
+      (uiop:getcwd)))))
+
 (defun %archive-key (archive)
-  (let* ((pn (uiop:ensure-pathname archive :want-pathname t))
-         (abs (uiop:ensure-absolute-pathname pn (uiop:getcwd))))
-    (or (ignore-errors (uiop:unix-namestring abs))
-        (namestring abs))))
+  (let ((pn (%archive-pathname archive)))
+    (namestring (or (ignore-errors (truename pn)) pn))))
 
 (defun make-zip-filesystem (archive &key (cache t) bytes)
   "Open ARCHIVE (pathname/string) as a ZIP-FILESYSTEM.
    :BYTES supplies the archive contents (tests / already-read buffers)."
-  (let ((key (if bytes
-                 (format nil "bytes:~A" (sxhash bytes))
-                 (%archive-key archive))))
+  (let* ((pn (unless bytes (%archive-pathname archive)))
+         (key (if bytes
+                  (format nil "bytes:~A" (sxhash bytes))
+                  (%archive-key pn))))
     (or (and cache (not bytes) (gethash key *zip-filesystem-cache*))
         (let ((fs (make-instance 'zip-filesystem
                                  :archive (if bytes
                                               (or archive (format nil "<bytes:~A>" (length bytes)))
-                                              key)
+                                              pn)
                                  :bytes bytes)))
           (%zip-load-central-directory fs)
           (when (and cache (not bytes))
             (setf (gethash key *zip-filesystem-cache*) fs))
           fs))))
 
+(defun %file-uri-path (archive)
+  "RFC 8089 path-absolute of a local archive (no scheme).
+   Unix: /tmp/x.zip   Windows: /C:/Users/foo/x.zip"
+  (cond
+    ((and (stringp archive)
+          (plusp (length archive))
+          (char= (char archive 0) #\<))
+     archive)
+    (t
+     (let* ((pn (if (pathnamep archive)
+                    (uiop:ensure-absolute-pathname archive (uiop:getcwd))
+                    (%archive-pathname archive)))
+            (native (substitute #\/ #\\ (uiop:native-namestring pn))))
+       (cond
+         ((and (>= (length native) 2)
+               (alpha-char-p (char native 0))
+               (char= (char native 1) #\:))
+          (concatenate 'string "/" native))
+         ((and (plusp (length native)) (char= (char native 0) #\/))
+          native)
+         (t (concatenate 'string "/" native)))))))
+
 (defun %zip-archive-uri (archive)
-  (let ((s (if (pathnamep archive)
-               (or (uiop:unix-namestring archive) (namestring archive))
-               (string archive))))
-    (if (and (plusp (length s)) (char= (char s 0) #\/))
-        s
-        s)))
+  (%pct-encode-archive (%file-uri-path archive)))
 
 (defun parse-zip-uri (uri)
   (let* ((rest (cond ((and (>= (length uri) 6)
@@ -174,7 +264,7 @@
          (entry (if bang (subseq rest (1+ bang)) "/")))
     (when (zerop (length archive))
       (error 'path-error :path uri :message "zip:// URI missing archive path"))
-    (let ((fs (make-zip-filesystem archive)))
+    (let ((fs (make-zip-filesystem (%normalize-archive-string archive))))
       (make-path (fs-parse fs (if (plusp (length entry)) entry "/"))
                  :filesystem fs))))
 
@@ -488,8 +578,9 @@
 
 (defun zip-tree (root &optional destination)
   "Zip every file under ROOT (directory). Writes DESTINATION or returns bytes.
-   Paths inside the archive are relative to ROOT (no leading slash)."
-  (let* ((root (ensure-directory (absolute root)))
+   Paths inside the archive are relative to ROOT (no leading slash).
+   ROOT is resolved first so Windows 8.3 vs long names agree."
+  (let* ((root (ensure-directory (resolve root :strict t)))
          (entries '()))
     (dolist (triple (walk root))
       (destructuring-bind (_dir files __dirs) triple
