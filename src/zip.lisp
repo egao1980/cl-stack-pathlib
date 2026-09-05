@@ -9,55 +9,25 @@
 ;;; Also accepted: zip://C:/… (do not treat C as host), zip:file:///C:/…!/…
 ;;; Never uiop:unix-namestring the archive — it drops the drive letter.
 ;;; Entries are posix paths rooted at / inside the archive (APPNOTE: / only, no drive).
-;;; Method 0 (stored) and 8 (deflate via chipz).
-
-(defparameter +zip-local-sig+ #x04034b50)
-(defparameter +zip-central-sig+ #x02014b50)
-(defparameter +zip-eocd-sig+ #x06054b50)
+;;; Method 0 (stored) and 8 (deflate via compression-protocol).
 
 (defclass zip-filesystem (filesystem)
   ((archive :initarg :archive :reader zip-filesystem-archive)
+   (zip :initarg :zip :accessor zip-filesystem-zip)
    (entries :initform (make-hash-table :test #'equal) :reader zip-filesystem-entries)
    (bytes :initarg :bytes :initform nil :accessor zip-filesystem-bytes))
   (:default-initargs :name "zip"))
 
 (defun zip-filesystem-p (x) (typep x 'zip-filesystem))
 
-(defstruct (%zip-entry (:constructor %make-zip-entry))
-  name method crc compressed-size uncompressed-size header-offset dos-date dos-time)
+(defun %zip-file-entry-p (ent)
+  (compression-protocol:archive-entry-p ent))
 
 (defvar *zip-filesystem-cache* (make-hash-table :test #'equal)
   "Absolute archive namestring → ZIP-FILESYSTEM.")
 
 (defun clear-zip-filesystem-cache ()
   (clrhash *zip-filesystem-cache*))
-
-(defun %u16 (bytes offset)
-  (logior (aref bytes offset)
-          (ash (aref bytes (1+ offset)) 8)))
-
-(defun %u32 (bytes offset)
-  (logior (aref bytes offset)
-          (ash (aref bytes (+ offset 1)) 8)
-          (ash (aref bytes (+ offset 2)) 16)
-          (ash (aref bytes (+ offset 3)) 24)))
-
-(defun %put-u16 (out value)
-  (vector-push-extend (logand value #xff) out)
-  (vector-push-extend (logand (ash value -8) #xff) out))
-
-(defun %put-u32 (out value)
-  (vector-push-extend (logand value #xff) out)
-  (vector-push-extend (logand (ash value -8) #xff) out)
-  (vector-push-extend (logand (ash value -16) #xff) out)
-  (vector-push-extend (logand (ash value -24) #xff) out))
-
-(defun %read-file-bytes (pathname)
-  (with-open-file (s pathname :direction :input :element-type '(unsigned-byte 8)
-                     :if-does-not-exist :error)
-    (let ((buf (make-array (file-length s) :element-type '(unsigned-byte 8))))
-      (read-sequence buf s)
-      buf)))
 
 (defun %zip-normalize-name (name)
   (let* ((s (if (and (plusp (length name)) (char= (char name 0) #\/))
@@ -66,62 +36,17 @@
          (s (string-right-trim "/" s)))
     (if (zerop (length s)) "/" s)))
 
-(defun %find-eocd (bytes)
-  (let ((len (length bytes))
-        (sig (make-array 4 :element-type '(unsigned-byte 8)
-                         :initial-contents '(#x50 #x4b #x05 #x06))))
-    (loop for i from (max 0 (- len 22 65535)) below (- len 21)
-          when (and (= (aref bytes i) (aref sig 0))
-                     (= (aref bytes (+ i 1)) (aref sig 1))
-                     (= (aref bytes (+ i 2)) (aref sig 2))
-                     (= (aref bytes (+ i 3)) (aref sig 3)))
-            do (return i)
-          finally (error 'path-error :message "not a zip archive (EOCD missing)"))))
-
-(defun %zip-load-central-directory (fs)
-  (let* ((bytes (or (zip-filesystem-bytes fs)
-                    (setf (zip-filesystem-bytes fs)
-                          (%read-file-bytes (zip-filesystem-archive fs)))))
-         (eocd (%find-eocd bytes))
-         (count (%u16 bytes (+ eocd 10)))
-         (cd-offset (%u32 bytes (+ eocd 16)))
-         (table (zip-filesystem-entries fs)))
+(defun %zip-index-from-archive (fs)
+  (let ((table (zip-filesystem-entries fs)))
     (clrhash table)
     (setf (gethash "/" table) :dir)
-    (let ((off cd-offset))
-      (dotimes (_ count)
-        (unless (= (%u32 bytes off) +zip-central-sig+)
-          (error 'path-error :filesystem fs
-                 :message "corrupt zip central directory"))
-        (let* ((method (%u16 bytes (+ off 10)))
-               (dos-time (%u16 bytes (+ off 12)))
-               (dos-date (%u16 bytes (+ off 14)))
-               (crc (%u32 bytes (+ off 16)))
-               (comp (%u32 bytes (+ off 20)))
-               (uncomp (%u32 bytes (+ off 24)))
-               (name-len (%u16 bytes (+ off 28)))
-               (extra-len (%u16 bytes (+ off 30)))
-               (comment-len (%u16 bytes (+ off 32)))
-               (local-off (%u32 bytes (+ off 42)))
-               (name (babel-or-utf8 bytes (+ off 46) name-len))
-               (key (%zip-normalize-name name)))
-          (if (and (plusp (length name))
-                   (char= (char name (1- (length name))) #\/))
-              (setf (gethash key table) :dir)
-              (setf (gethash key table)
-                    (%make-zip-entry :name key :method method :crc crc
-                                     :compressed-size comp
-                                     :uncompressed-size uncomp
-                                     :header-offset local-off
-                                     :dos-date dos-date :dos-time dos-time)))
-          (%zip-ensure-parents table key)
-          (incf off (+ 46 name-len extra-len comment-len))))
-    table)))
-
-(defun babel-or-utf8 (bytes start len)
-  "UTF-8 decode of LEN bytes at START. ZIP stores names as CP437 or UTF-8;
-   UTF-8 is a superset of the ASCII names we care about."
-  (utf8-octets-to-string (subseq bytes start (+ start len))))
+    (dolist (ent (compression-protocol:archive-entries (zip-filesystem-zip fs)))
+      (let ((key (%zip-normalize-name (compression-protocol:archive-entry-name ent))))
+        (if (compression-protocol:archive-entry-directory-p ent)
+            (setf (gethash key table) :dir)
+            (setf (gethash key table) ent))
+        (%zip-ensure-parents table key)))
+    table))
 
 (defun %zip-ensure-parents (table key)
   (let ((s key))
@@ -216,12 +141,18 @@
                   (format nil "bytes:~A" (sxhash bytes))
                   (%archive-key pn))))
     (or (and cache (not bytes) (gethash key *zip-filesystem-cache*))
-        (let ((fs (make-instance 'zip-filesystem
-                                 :archive (if bytes
-                                              (or archive (format nil "<bytes:~A>" (length bytes)))
-                                              pn)
-                                 :bytes bytes)))
-          (%zip-load-central-directory fs)
+        (let* ((source (or bytes pn))
+               (zip (handler-case
+                        (compression-protocol:open-archive source :format :zip)
+                      (error (e)
+                        (error 'path-error :message (format nil "~a" e)))))
+               (fs (make-instance 'zip-filesystem
+                                  :archive (if bytes
+                                               (or archive (format nil "<bytes:~A>" (length bytes)))
+                                               pn)
+                                  :zip zip
+                                  :bytes bytes)))
+          (%zip-index-from-archive fs)
           (when (and cache (not bytes))
             (setf (gethash key *zip-filesystem-cache*) fs))
           fs))))
@@ -334,7 +265,7 @@
 (defmethod fs-file-p ((fs zip-filesystem) pathname)
   (let ((ent (gethash (%zip-key fs (fs-absolute fs pathname))
                       (zip-filesystem-entries fs))))
-    (%zip-entry-p ent)))
+    (%zip-file-entry-p ent)))
 
 (defmethod fs-directory-p ((fs zip-filesystem) pathname)
   (eq (gethash (%zip-key fs (fs-absolute fs pathname))
@@ -355,9 +286,9 @@
 (defmethod fs-file-size ((fs zip-filesystem) pathname)
   (let ((ent (gethash (%zip-key fs (fs-absolute fs pathname))
                       (zip-filesystem-entries fs))))
-    (unless (%zip-entry-p ent)
+    (unless (%zip-file-entry-p ent)
       (error 'path-not-found :filesystem fs :path pathname))
-    (%zip-entry-uncompressed-size ent)))
+    (compression-protocol:archive-entry-uncompressed-size ent)))
 
 (defun %dos-datetime-universal (date time)
   (let ((day (logand date #x1f))
@@ -373,9 +304,10 @@
 (defmethod fs-last-modified ((fs zip-filesystem) pathname)
   (let ((ent (gethash (%zip-key fs (fs-absolute fs pathname))
                       (zip-filesystem-entries fs))))
-    (unless (%zip-entry-p ent)
+    (unless (%zip-file-entry-p ent)
       (error 'path-not-found :filesystem fs :path pathname))
-    (%dos-datetime-universal (%zip-entry-dos-date ent) (%zip-entry-dos-time ent))))
+    (%dos-datetime-universal (compression-protocol:archive-entry-dos-date ent)
+                             (compression-protocol:archive-entry-dos-time ent))))
 
 (defmethod fs-iterdir ((fs zip-filesystem) pathname)
   (let* ((abs (fs-absolute fs pathname))
@@ -457,29 +389,18 @@
   (declare (ignore directory prefix suffix))
   (%unsupported fs 'fs-make-temp nil))
 
-(defun %inflate-deflate (compressed)
-  (chipz:decompress nil 'chipz:deflate compressed))
-
 (defun %zip-read-payload (fs entry)
-  (let* ((bytes (zip-filesystem-bytes fs))
-         (off (%zip-entry-header-offset entry)))
-    (unless (= (%u32 bytes off) +zip-local-sig+)
-      (error 'path-error :filesystem fs :path (%zip-entry-name entry)
-             :message "corrupt zip local header"))
-    (let* ((name-len (%u16 bytes (+ off 26)))
-           (extra-len (%u16 bytes (+ off 28)))
-           (data-off (+ off 30 name-len extra-len))
-           (comp (subseq bytes data-off (+ data-off (%zip-entry-compressed-size entry))))
-           (method (%zip-entry-method entry)))
-      (cond ((= method 0) comp)
-            ((= method 8) (%inflate-deflate comp))
-            (t (error 'path-error :filesystem fs :path (%zip-entry-name entry)
-                      :message (format nil "unsupported zip method ~A" method)))))))
+  (handler-case
+      (compression-protocol:read-entry (zip-filesystem-zip fs) entry)
+    (compression-protocol:archive-error (e)
+      (error 'path-error :filesystem fs
+             :path (compression-protocol:archive-entry-name entry)
+             :message (compression-protocol:compression-error-message e)))))
 
 (defmethod fs-read-bytes ((fs zip-filesystem) pathname)
   (let* ((abs (fs-absolute fs pathname))
          (ent (gethash (%zip-key fs abs) (zip-filesystem-entries fs))))
-    (unless (%zip-entry-p ent)
+    (unless (%zip-file-entry-p ent)
       (return-from fs-read-bytes
         (%restart-path-not-found fs abs
                                  :message "file does not exist"
@@ -499,73 +420,10 @@
 
 ;;; --- stored ZIP writer (tests / bundling) --------------------------------
 
-(defparameter *crc32-table*
-  (let ((table (make-array 256 :element-type '(unsigned-byte 32))))
-    (dotimes (n 256 table)
-      (let ((c n))
-        (dotimes (_ 8)
-          (setf c (if (oddp c)
-                      (logxor #xedb88320 (ash c -1))
-                      (ash c -1))))
-        (setf (aref table n) c)))))
-
-(defun crc32 (bytes)
-  (let ((crc #xffffffff))
-    (loop for b across bytes
-          do (setf crc (logxor (aref *crc32-table* (logand (logxor crc b) #xff))
-                               (ash crc -8))))
-    (logxor crc #xffffffff)))
-
 (defun write-zip-bytes (entries)
   "Build a stored (method 0) ZIP as a byte vector.
    ENTRIES is a list of (posix-name string-or-octets)."
-  (let ((out (make-array 0 :element-type '(unsigned-byte 8) :adjustable t :fill-pointer 0))
-        (centrals '()))
-    (dolist (pair entries)
-      (destructuring-bind (name data) pair
-        (let* ((name (string-left-trim "/" (string name)))
-               (name-octets (utf8-string-to-octets name))
-               (payload (if (stringp data) (utf8-string-to-octets data)
-                            (coerce data '(vector (unsigned-byte 8)))))
-               (crc (crc32 payload))
-               (local-off (length out)))
-          (%put-u32 out +zip-local-sig+)
-          (%put-u16 out 20)             ; version
-          (%put-u16 out 0)              ; flags
-          (%put-u16 out 0)              ; stored
-          (%put-u16 out 0) (%put-u16 out 0) ; time/date
-          (%put-u32 out crc)
-          (%put-u32 out (length payload))
-          (%put-u32 out (length payload))
-          (%put-u16 out (length name-octets))
-          (%put-u16 out 0)
-          (loop for b across name-octets do (vector-push-extend b out))
-          (loop for b across payload do (vector-push-extend b out))
-          (push (list name-octets crc (length payload) local-off) centrals))))
-    (setf centrals (nreverse centrals))
-    (let ((cd-off (length out)))
-      (dolist (c centrals)
-        (destructuring-bind (name-octets crc size local-off) c
-          (%put-u32 out +zip-central-sig+)
-          (%put-u16 out 20) (%put-u16 out 20)
-          (%put-u16 out 0) (%put-u16 out 0)
-          (%put-u16 out 0) (%put-u16 out 0)
-          (%put-u32 out crc)
-          (%put-u32 out size) (%put-u32 out size)
-          (%put-u16 out (length name-octets))
-          (%put-u16 out 0) (%put-u16 out 0)
-          (%put-u16 out 0) (%put-u16 out 0)
-          (%put-u32 out 0)
-          (%put-u32 out local-off)
-          (loop for b across name-octets do (vector-push-extend b out))))
-      (let ((cd-size (- (length out) cd-off)))
-        (%put-u32 out +zip-eocd-sig+)
-        (%put-u16 out 0) (%put-u16 out 0)
-        (%put-u16 out (length centrals)) (%put-u16 out (length centrals))
-        (%put-u32 out cd-size)
-        (%put-u32 out cd-off)
-        (%put-u16 out 0)))
-    out))
+  (compression-protocol:write-archive-bytes entries :format :zip))
 
 (defun write-zip-file (pathname entries)
   "Write ENTRIES (see WRITE-ZIP-BYTES) to PATHNAME. Returns PATHNAME."

@@ -1,9 +1,9 @@
 (defsystem "cl-stack-pathlib"
-  :version "0.2.1"
+  :version "0.2.2"
   :description "CLOS paths + pluggable filesystems (pathlib/NIO-style) for cl-stack"
   :author "egao1980"
   :license "MIT"
-  :depends-on ("uiop" "chipz")
+  :depends-on ("uiop" "compression-protocol" "compression-backend-chipz")
 
   :serial t
   :pathname "src"
