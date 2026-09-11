@@ -137,11 +137,16 @@
    #:rename-path
    #:replace-path
    #:copy-path
+   #:copytree
    #:move-path
+   #:rmtree
+   #:which
    #:create-symlink
    #:read-symlink
    #:make-temp-file
    #:make-temp-directory
+   #:with-temp-file
+   #:with-temp-directory
    #:read-text
    #:write-text
    #:read-bytes
