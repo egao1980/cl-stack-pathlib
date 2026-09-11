@@ -30,6 +30,11 @@ Virtual FS support: specialize `filesystem` (shipped: `local-filesystem`, `memor
   (write-text "/a/b.txt" "hi")
   (read-text "/a/b.txt"))
 
+(with-temp-directory (tmp)
+  (write-text (join tmp "x.txt") "hi")
+  (copytree tmp "/backup")
+  (which "sbcl"))
+
 ;; recoveries (CL restarts)
 (with-auto-create-parents
   (mkdir "/deep/nested" :parents nil))   ; CREATE-PARENTS + RETRY

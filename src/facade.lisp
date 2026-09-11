@@ -362,6 +362,66 @@ Stops when PARENT is a fixed point (root), so broken backends cannot loop."
 
 (defun move-path (source target &key (replace t))
   (rename-path source target :replace replace))
+
+(defun rmtree (designator &key (missing-ok nil))
+  "Remove a file or a directory tree (shutil.rmtree / rm -rf)."
+  (with-path-restarts
+    (let ((p (ensure-path designator)))
+      (cond
+        ((not (exists-p p))
+         (unless missing-ok
+           (error 'path-not-found :path p :filesystem (path-filesystem p)
+                  :message "rmtree target does not exist")))
+        ((symlink-p p)
+         (unlink p :missing-ok t))
+        ((directory-p p)
+         (dolist (child (iterdir p))
+           (rmtree child :missing-ok t))
+         (rmdir p))
+        (t
+         (unlink p :missing-ok t)))))
+  (ensure-path designator))
+
+(defun copytree (source target &key (exist-ok nil) (replace t))
+  "Copy a directory tree (shutil.copytree). EXIST-OK keeps a pre-existing TARGET."
+  (with-path-restarts
+    (let ((src (ensure-path source))
+          (dst (ensure-path target)))
+      (unless (directory-p src)
+        (error 'path-error :path src :filesystem (path-filesystem src)
+               :message "copytree source is not a directory"))
+      (when (exists-p dst)
+        (unless (and exist-ok (directory-p dst))
+          (error 'path-exists-error :path dst :filesystem (path-filesystem dst)
+                 :message "copytree target exists")))
+      (mkdir dst :parents t :exist-ok t)
+      (dolist (child (iterdir src))
+        (let ((kid (join dst (name child))))
+          (if (directory-p child)
+              (copytree child kid :exist-ok t :replace replace)
+              (copy-path child kid :replace replace))))
+      dst)))
+
+(defun which (name &key path (filesystem *filesystem*))
+  "First PATH entry that contains NAME (shutil.which). PATH is a string
+   (`:` / `;` on Windows) or a list of directory designators. On
+   local-filesystem also requires executable-p; other backends only file-p."
+  (let* ((sep (if (uiop:os-windows-p) #\; #\:))
+         (dirs (cond
+                 ((null path)
+                  (uiop:split-string (or (uiop:getenv "PATH") "") :separator (list sep)))
+                 ((stringp path)
+                  (uiop:split-string path :separator (list sep)))
+                 ((listp path) path)
+                 (t (error 'path-error :message (format nil "bad PATH ~s" path)))))
+         (local-p (typep filesystem 'local-filesystem)))
+    (dolist (dir dirs)
+      (unless (or (null dir) (and (stringp dir) (zerop (length dir))))
+        (let ((candidate (join (ensure-path dir :filesystem filesystem) name)))
+          (when (and (file-p candidate)
+                     (or (not local-p) (executable-p candidate)))
+            (return candidate)))))))
+
 (defun create-symlink (link target)
   (let ((l (ensure-path link)))
     (%wrap (path-filesystem l)
@@ -384,6 +444,18 @@ Stops when PARENT is a fixed point (root), so broken backends cannot loop."
   (let ((pn (fs-make-temp filesystem :directory (when directory (%pn directory))
                                      :prefix prefix :suffix "")))
     (%wrap filesystem (fs-mkdir filesystem pn :parents t :exist-ok t))))
+
+(defmacro with-temp-file ((var &rest keys) &body body)
+  "Bind VAR to a new temp file; unlink it on unwind."
+  `(let ((,var (make-temp-file ,@keys)))
+     (unwind-protect (progn ,@body)
+       (ignore-errors (unlink ,var :missing-ok t)))))
+
+(defmacro with-temp-directory ((var &rest keys) &body body)
+  "Bind VAR to a new temp directory; rmtree it on unwind."
+  `(let ((,var (make-temp-directory ,@keys)))
+     (unwind-protect (progn ,@body)
+       (ignore-errors (rmtree ,var :missing-ok t)))))
 
 (defun read-bytes (designator)
   (with-path-restarts
