@@ -161,3 +161,21 @@
     (ok (posix= (which "tool" :path "/bin") "/bin/tool"))
     (ok (posix= (which "tool" :path '("/opt" "/bin")) "/bin/tool"))
     (ok (null (which "missing" :path "/bin")))))
+
+(deftest local-native-ops
+  ;; Local backend paths that need OS calls (sb-posix on SBCL, EXT/SI + c-inline on ECL).
+  #+(and (or sbcl ecl) unix)
+  (let ((root (join (uiop:temporary-directory) (format nil "cl-stack-pathlib-~A" (random 1000000000)))))
+    (unwind-protect
+         (progn
+           (mkdir root :parents nil)
+           (ok (directory-p root))
+           (write-text (join root "real.txt") "x")
+           (create-symlink (join root "link") (join root "real.txt"))
+           (ok (symlink-p (join root "link")))
+           (ng (symlink-p (join root "real.txt")))
+           (ok (posix= (read-symlink (join root "link")) (as-posix (join root "real.txt"))))
+           (ng (executable-p (join root "real.txt")))
+           (ok (executable-p "/bin/sh")))
+      (uiop:delete-directory-tree (uiop:ensure-directory-pathname (path-pathname (ensure-path root)))
+                                  :validate t :if-does-not-exist :ignore))))

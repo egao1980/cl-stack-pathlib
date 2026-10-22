@@ -7,6 +7,20 @@
 (defun make-local-filesystem ()
   (make-instance 'local-filesystem))
 
+;;; ECL has no lstat/readlink/symlink bindings in EXT/SI.
+#+(and ecl unix)
+(progn
+  (ffi:clines "#include <unistd.h>" "#include <limits.h>")
+  (defun %ecl-access-x-p (namestring)
+    (ffi:c-inline (namestring) (:cstring) :bool "access(#0, X_OK) == 0" :one-liner t))
+  (defun %ecl-symlink (target link)
+    (ffi:c-inline (target link) (:cstring :cstring) :bool "symlink(#0, #1) == 0" :one-liner t))
+  (defun %ecl-readlink (namestring)
+    (ffi:c-inline (namestring) (:cstring) :object
+      "{ char buf[PATH_MAX]; ssize_t n = readlink(#0, buf, sizeof(buf) - 1);
+         if (n < 0) @(return) = ECL_NIL;
+         else { buf[n] = 0; @(return) = ecl_make_simple_base_string(buf, n); } }")))
+
 (defmethod fs-parse ((fs local-filesystem) designator &key directory)
   (let ((pn (etypecase designator
               (pathname designator)
@@ -96,7 +110,9 @@ UIOP TRUENAMIZE alone is not enough — it succeeds for missing leaves."
       (let ((stat (sb-posix:lstat (namestring (fs-parse fs pathname)))))
         (sb-posix:s-islnk (sb-posix:stat-mode stat)))
     (error () nil))
-  #-sbcl nil)
+  #+ecl
+  (eq (ignore-errors (ext:file-kind (namestring (fs-parse fs pathname)) nil)) :link)
+  #-(or sbcl ecl) nil)
 
 (defmethod fs-readable-p ((fs local-filesystem) pathname)
   (ignore-errors
@@ -124,7 +140,9 @@ UIOP TRUENAMIZE alone is not enough — it succeeds for missing leaves."
       (let ((mode (sb-posix:stat-mode (sb-posix:stat (namestring (fs-parse fs pathname))))))
         (plusp (logand mode sb-posix:s-ixusr)))
     (error () nil))
-  #-sbcl nil)
+  #+ecl
+  (%ecl-access-x-p (namestring (fs-parse fs pathname)))
+  #-(or sbcl ecl) nil)
 
 (defmethod fs-file-size ((fs local-filesystem) pathname)
   (with-open-file (s (fs-parse fs pathname) :direction :input :element-type '(unsigned-byte 8)
@@ -181,7 +199,8 @@ UIOP TRUENAMIZE alone is not enough — it succeeds for missing leaves."
              (unless (uiop:directory-exists-p parent)
                (%restart-create-parents fs dir))
              #+sbcl (sb-posix:mkdir (namestring dir) #o755)
-             #-sbcl (uiop:run-program (list "mkdir" (uiop:unix-namestring dir))
+             #+ecl (si:mkdir (namestring dir) #o755)
+             #-(or sbcl ecl) (uiop:run-program (list "mkdir" (uiop:unix-namestring dir))
                                       :ignore-error-status nil))
            dir))))
 
@@ -270,13 +289,24 @@ UIOP TRUENAMIZE alone is not enough — it succeeds for missing leaves."
     (sb-posix:symlink (namestring (fs-parse fs target))
                       (namestring (fs-parse fs link)))
     (fs-parse fs link))
-  #-(and sbcl unix)
+  #+(and ecl unix)
+  (progn
+    (unless (%ecl-symlink (namestring (fs-parse fs target))
+                          (namestring (fs-parse fs link)))
+      (error 'path-error :filesystem fs :path link :message "symlink failed"))
+    (fs-parse fs link))
+  #-(and (or sbcl ecl) unix)
   (%unsupported fs 'fs-create-symlink link))
 
 (defmethod fs-read-symlink ((fs local-filesystem) pathname)
   #+(and sbcl unix)
   (pathname (sb-posix:readlink (namestring (fs-parse fs pathname))))
-  #-(and sbcl unix)
+  #+(and ecl unix)
+  (let ((target (%ecl-readlink (namestring (fs-parse fs pathname)))))
+    (if target
+        (pathname target)
+        (error 'path-error :filesystem fs :path pathname :message "readlink failed")))
+  #-(and (or sbcl ecl) unix)
   (%unsupported fs 'fs-read-symlink pathname))
 
 (defmethod fs-read-bytes ((fs local-filesystem) pathname)
