@@ -64,7 +64,9 @@
       (push "/" out))
     (when (consp dir)
       (dolist (c (rest dir))
-        (when (stringp c) (push c out))))
+        ;; ECL's MAKE-PATHNAME turns a ".." component into :UP.
+        (cond ((stringp c) (push c out))
+              ((member c '(:up :back)) (push ".." out)))))
     (let ((fn (%file-namestring* pn)))
       (when fn (push fn out)))
     (nreverse out)))
@@ -276,7 +278,7 @@ Stops when PARENT is a fixed point (root), so broken backends cannot loop."
 (defun path-equal (a b)
   (and (eq (path-filesystem (ensure-path a))
            (path-filesystem (ensure-path b)))
-       (equal (namestring (%pn a)) (namestring (%pn b)))))
+       (equal (%pathname-as-posix (%pn a)) (%pathname-as-posix (%pn b)))))
 
 (macrolet ((def-probe (name fs-name)
              `(defun ,name (designator)

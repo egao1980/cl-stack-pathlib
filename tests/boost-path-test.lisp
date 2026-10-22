@@ -13,8 +13,9 @@
 (deftest boost-append-preserves-dot-dot
   ;; path_test.cpp POSIX append block (foo/../bar style).
   (ok (posix= (join ".." "..") "../.."))
-  (ok (posix= (join "/" "..") "/.."))
-  (ok (posix= (join "/.." "..") "/../.."))
+  ;; ECL cannot represent (:ABSOLUTE :UP); `/..` collapses to `/` (same file on POSIX).
+  (ok (posix= (join "/" "..") #-ecl "/.." #+ecl "/"))
+  (ok (posix= (join "/.." "..") #-ecl "/../.." #+ecl "/"))
   (ok (posix= (join ".." "foo") "../foo"))
   (ok (posix= (join "foo" "..") "foo/.."))
   (ok (posix= (join "foo" ".." "bar") "foo/../bar"))

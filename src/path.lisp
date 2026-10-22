@@ -141,11 +141,15 @@ RFC 8089 drive: `/C:/Users/foo` and `C:/Users/foo` → device C."
                  (setf name (subseq file 0 dot)
                        type (subseq file (1+ dot)))))
               (t (setf name file))))
+      (setf dir-comps (nreverse dir-comps))
+      ;; ECL rejects (:ABSOLUTE :UP …); `/..` is `/` on POSIX, so drop them.
+      #+ecl (when abs
+              (loop while (equal (first dir-comps) "..") do (pop dir-comps)))
       (make-pathname :host nil
-                     :device (or device :unspecific)
+                     ;; ECL's NAMESTRING signals on a :UNSPECIFIC device.
+                     :device (or device #-ecl :unspecific)
                      :directory (when (or abs dir-comps)
-                                  (cons (if abs :absolute :relative)
-                                        (nreverse dir-comps)))
+                                  (cons (if abs :absolute :relative) dir-comps))
                      :name name :type type :version nil))))
 
 (defun %pathname-as-posix (pn)
