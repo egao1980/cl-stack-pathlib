@@ -183,8 +183,14 @@ Symlinks are removed, never followed."
                      ((not (or (fs-exists-p fs candidate)
                                (fs-symlink-p fs (fs-join fs (fs-parent fs candidate)
                                                          (%entry-name candidate)))))
+                      (fs-mkdir fs candidate :parents t :exist-ok nil)
+                      ;; Canonical form: the temp directory may be spelled
+                      ;; through a link or a short name (/var -> /private/var
+                      ;; on macOS, RUNNER~1 on Windows) while listings under
+                      ;; the root come back canonical.
                       (return-from %fresh-area-directory
-                        (fs-mkdir fs candidate :parents t :exist-ok nil))))))
+                        (uiop:ensure-directory-pathname
+                         (fs-resolve fs candidate :strict t)))))))
     (error 'path-error :filesystem fs :path base
                        :message "could not make a fresh area directory")))
 
