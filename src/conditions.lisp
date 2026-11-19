@@ -8,6 +8,7 @@
 ;;;   create-directory— mkdir the missing path, then retry
 ;;;   overwrite       — treat path-exists as replace/exist-ok, then retry
 ;;;   ignore-missing  — treat path-not-found as success (unlink-style)
+;;;   use-current     — CAS mismatch: keep the current content, write nothing
 ;;;   retry           — re-run the enclosing path operation
 ;;;   use-value       — supply an alternate return value (CL standard name)
 
@@ -28,6 +29,21 @@
 (define-condition not-relative-error (path-error) ())
 (define-condition unsupported-operation (path-error) ())
 (define-condition directory-not-empty (path-error) ())
+
+(define-condition content-hash-mismatch (path-error)
+  ((expected :initarg :expected :reader content-hash-mismatch-expected :initform nil
+             :documentation "The EXPECTED-HASH the caller passed: a digest string or :ABSENT.")
+   (actual :initarg :actual :reader content-hash-mismatch-actual :initform nil
+           :documentation "Digest of the current content, or NIL when PATH does not exist."))
+  (:documentation "Compare-and-swap write refused: PATH changed since it was read.
+Signalled by FS-WRITE-ATOMIC (and WRITE-BYTES / WRITE-TEXT with :EXPECTED-HASH)
+with restarts OVERWRITE (write anyway) and USE-CURRENT (keep the current
+content, write nothing).")
+  (:report (lambda (c s)
+             (format s "content of ~S changed: expected ~S, found ~S"
+                     (path-error-path c)
+                     (content-hash-mismatch-expected c)
+                     (content-hash-mismatch-actual c)))))
 
 (defun %unsupported (fs op path)
   (error 'unsupported-operation
@@ -129,6 +145,10 @@ invoke RETRY after mutating the filesystem."
 
 (defun invoke-ignore-missing (&optional condition)
   (let ((r (find-restart 'ignore-missing condition)))
+    (when r (invoke-restart r))))
+
+(defun invoke-use-current (&optional condition)
+  (let ((r (find-restart 'use-current condition)))
     (when r (invoke-restart r))))
 
 (defun invoke-retry (&optional condition)

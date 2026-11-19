@@ -1,5 +1,5 @@
 (defsystem "cl-stack-pathlib"
-  :version "0.3.2"
+  :version "0.4.0"
   :description "CLOS paths + pluggable filesystems (pathlib/NIO-style) for cl-stack"
   :author "egao1980"
   :license "MIT"
@@ -12,10 +12,13 @@
                (:file "conditions")
                (:file "protocol")
                (:file "path")
+               (:file "hash")
+               (:file "ignore")
                (:file "local")
                (:file "memory")
                (:file "facade")
-               (:file "zip"))
+               (:file "zip")
+               (:file "extensions"))
   :in-order-to ((test-op (test-op "cl-stack-pathlib/tests"))))
 
 (defsystem "cl-stack-pathlib/tests"
@@ -28,7 +31,19 @@
                (:file "normalize-test")
                (:file "fs-ops-test")
                (:file "restarts-test")
-               (:file "uri-zip-test"))
+               (:file "uri-zip-test")
+               (:module "fixtures"
+                :components ((:static-file "gitignore-corpus.sexp")
+                             (:static-file "gitignore-cases.txt")
+                             (:static-file "gen-gitignore-corpus.py")))
+               (:file "h2a-support")
+               (:file "hash-test")
+               (:file "read-range-test")
+               (:file "atomic-write-test")
+               (:file "ignore-test")
+               (:file "walk-ignore-test")
+               (:file "grep-test")
+               (:file "stat-test"))
   :perform (test-op (o c)
              (unless (symbol-call :rove :run c)
                (error "tests failed for ~A" (component-name c)))))

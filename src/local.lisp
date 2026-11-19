@@ -158,7 +158,8 @@ UIOP TRUENAMIZE alone is not enough — it succeeds for missing leaves."
       (error 'path-not-found :filesystem fs :path dir))
     (append (uiop:directory-files dir) (uiop:subdirectories dir))))
 
-(defmethod fs-glob ((fs local-filesystem) pathname pattern &key recursive)
+(defmethod fs-glob ((fs local-filesystem) pathname pattern &key recursive ignore)
+  (when ignore (%h2a-pending 'fs-glob))
   (let* ((base (uiop:ensure-directory-pathname (fs-absolute fs pathname)))
          (pat (if recursive
                   (merge-pathnames
@@ -168,8 +169,9 @@ UIOP TRUENAMIZE alone is not enough — it succeeds for missing leaves."
                   (merge-pathnames (%wild-pattern pattern) base))))
     (directory pat)))
 
-(defmethod fs-walk ((fs local-filesystem) pathname &key (top-down t) (follow-symlinks nil))
+(defmethod fs-walk ((fs local-filesystem) pathname &key (top-down t) (follow-symlinks nil) ignore)
   (declare (ignore follow-symlinks))
+  (when ignore (%h2a-pending 'fs-walk))
   (let ((out '()))
     (labels ((walk* (dir)
                (let* ((dir (uiop:ensure-directory-pathname dir))

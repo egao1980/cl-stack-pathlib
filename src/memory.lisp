@@ -167,7 +167,8 @@
              (memory-fs-root fs))
     (nreverse out)))
 
-(defmethod fs-glob ((fs memory-filesystem) pathname pattern &key recursive)
+(defmethod fs-glob ((fs memory-filesystem) pathname pattern &key recursive ignore)
+  (when ignore (%h2a-pending 'fs-glob))
   (let* ((base-key (%mem-key fs (fs-absolute fs pathname)))
          (prefix (if (string= base-key "/")
                      "/"
@@ -189,8 +190,9 @@
      (memory-fs-root fs))
     (nreverse out)))
 
-(defmethod fs-walk ((fs memory-filesystem) pathname &key (top-down t) follow-symlinks)
+(defmethod fs-walk ((fs memory-filesystem) pathname &key (top-down t) follow-symlinks ignore)
   (declare (ignore follow-symlinks))
+  (when ignore (%h2a-pending 'fs-walk))
   (let ((out '()))
     (labels ((walk* (dir)
                (let* ((entries (fs-iterdir fs dir))

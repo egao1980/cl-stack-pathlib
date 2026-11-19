@@ -299,15 +299,18 @@ Stops when PARENT is a fixed point (root), so broken backends cannot loop."
     (mapcar (lambda (pn) (%wrap (path-filesystem p) pn))
             (fs-iterdir (path-filesystem p) (path-pathname p)))))
 
-(defun glob (designator pattern &key recursive)
+(defun glob (designator pattern &key recursive ignore)
+  "IGNORE: NIL, an IGNORE-MATCHER or :AUTO (see FS-GLOB)."
   (let ((p (ensure-path designator)))
     (mapcar (lambda (pn) (%wrap (path-filesystem p) pn))
-            (fs-glob (path-filesystem p) (path-pathname p) pattern :recursive recursive))))
+            (fs-glob (path-filesystem p) (path-pathname p) pattern
+                     :recursive recursive :ignore ignore))))
 
-(defun rglob (designator pattern)
-  (glob designator pattern :recursive t))
+(defun rglob (designator pattern &key ignore)
+  (glob designator pattern :recursive t :ignore ignore))
 
-(defun walk (designator &key (top-down t) (follow-symlinks nil))
+(defun walk (designator &key (top-down t) (follow-symlinks nil) ignore)
+  "IGNORE: NIL, an IGNORE-MATCHER or :AUTO (see FS-WALK)."
   (let ((p (ensure-path designator))
         (fs (path-filesystem (ensure-path designator))))
     (mapcar (lambda (triple)
@@ -316,7 +319,8 @@ Stops when PARENT is a fixed point (root), so broken backends cannot loop."
                       (mapcar (lambda (f) (%wrap fs f)) files)
                       (mapcar (lambda (d) (%wrap fs d)) dirs))))
             (fs-walk fs (path-pathname p) :top-down top-down
-                                          :follow-symlinks follow-symlinks))))
+                                          :follow-symlinks follow-symlinks
+                                          :ignore ignore))))
 
 (defun mkdir (designator &key (parents t) (exist-ok t))
   (with-path-restarts
@@ -464,20 +468,30 @@ Stops when PARENT is a fixed point (root), so broken backends cannot loop."
     (let ((p (ensure-path designator)))
       (fs-read-bytes (path-filesystem p) (path-pathname p)))))
 
-(defun write-bytes (designator bytes &key append)
+(defun write-bytes (designator bytes &key append atomic expected-hash)
+  "Write BYTES to DESIGNATOR. ATOMIC or EXPECTED-HASH go through
+FS-WRITE-ATOMIC and return (values path hash written-p); APPEND cannot be
+combined with them."
+  (when (and append (or atomic expected-hash))
+    (error "WRITE-BYTES: :APPEND cannot be combined with :ATOMIC or :EXPECTED-HASH"))
   (with-path-restarts
-    (let ((p (ensure-path designator)))
-      (%wrap (path-filesystem p)
-             (fs-write-bytes (path-filesystem p) (path-pathname p) bytes :append append)))))
+    (let* ((p (ensure-path designator))
+           (fs (path-filesystem p)))
+      (if (or atomic expected-hash)
+          (multiple-value-bind (pn hash written-p)
+              (fs-write-atomic fs (path-pathname p) bytes :expected-hash expected-hash)
+            (values (%wrap fs pn) hash written-p))
+          (%wrap fs (fs-write-bytes fs (path-pathname p) bytes :append append))))))
 
 (defun read-text (designator &key (encoding :utf-8))
   (ecase encoding
     (:utf-8 (utf8-octets-to-string (read-bytes designator)))
     (otherwise (error "unsupported text encoding ~S" encoding))))
 
-(defun write-text (designator text &key (encoding :utf-8) append)
+(defun write-text (designator text &key (encoding :utf-8) append atomic expected-hash)
   (ecase encoding
-    (:utf-8 (write-bytes designator (utf8-string-to-octets text) :append append))
+    (:utf-8 (write-bytes designator (utf8-string-to-octets text)
+                         :append append :atomic atomic :expected-hash expected-hash))
     (otherwise (error "unsupported text encoding ~S" encoding))))
 (defun utf8-octets-to-string (bytes)
   (let ((len (length bytes))

@@ -47,6 +47,36 @@
    #:fs-make-temp
    #:fs-same-p
    #:fs-as-uri
+   ;; H2a: ranged / streaming reads, hashes, atomic + CAS writes, stat, grep
+   #:fs-read-range
+   #:fs-read-lines
+   #:fs-open
+   #:fs-content-hash
+   #:fs-write-atomic
+   #:fs-stat
+   #:fs-grep
+   #:fs-grep-matcher
+   #:octets-hash
+   #:file-stat
+   #:file-stat-path
+   #:file-stat-kind
+   #:file-stat-size
+   #:file-stat-mtime
+   #:file-stat-mode
+   #:file-stat-hash
+   #:grep-match
+   #:grep-match-path
+   #:grep-match-line
+   #:grep-match-column
+   #:grep-match-text
+   ;; H2a: ignore matcher (.gitignore / .ignore syntax)
+   #:ignore-matcher
+   #:ignore-matcher-p
+   #:parse-ignore
+   #:merge-ignore
+   #:ignore-path-status
+   #:ignore-path-p
+   #:load-ignore-files
    ;; backends
    #:local-filesystem
    #:make-local-filesystem
@@ -151,6 +181,14 @@
    #:write-text
    #:read-bytes
    #:write-bytes
+   ;; H2a facade
+   #:read-range
+   #:read-lines
+   #:open-path
+   #:with-open-path
+   #:content-hash
+   #:stat
+   #:grep
    ;; conditions
    #:path-error
    #:path-error-path
@@ -162,6 +200,9 @@
    #:not-relative-error
    #:unsupported-operation
    #:directory-not-empty
+   #:content-hash-mismatch
+   #:content-hash-mismatch-expected
+   #:content-hash-mismatch-actual
    ;; restarts (invoke via INVOKE-RESTART / helpers)
    #:retry
    #:create-parents
@@ -169,6 +210,7 @@
    #:create-directory
    #:overwrite
    #:ignore-missing
+   #:use-current
    #:call-with-path-restarts
    #:with-path-restarts
    #:invoke-create-parents
@@ -176,6 +218,7 @@
    #:invoke-create-directory
    #:invoke-overwrite
    #:invoke-ignore-missing
+   #:invoke-use-current
    #:invoke-retry
    #:auto-create-parents
    #:auto-create-file

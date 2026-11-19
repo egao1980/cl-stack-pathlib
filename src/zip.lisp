@@ -325,7 +325,8 @@
              (zip-filesystem-entries fs))
     (nreverse out)))
 
-(defmethod fs-glob ((fs zip-filesystem) pathname pattern &key recursive)
+(defmethod fs-glob ((fs zip-filesystem) pathname pattern &key recursive ignore)
+  (when ignore (%h2a-pending 'fs-glob))
   (let* ((base-key (%zip-key fs (fs-absolute fs pathname)))
          (prefix (if (string= base-key "/") "/" (concatenate 'string base-key "/")))
          (out '()))
@@ -345,8 +346,9 @@
      (zip-filesystem-entries fs))
     (nreverse out)))
 
-(defmethod fs-walk ((fs zip-filesystem) pathname &key (top-down t) follow-symlinks)
+(defmethod fs-walk ((fs zip-filesystem) pathname &key (top-down t) follow-symlinks ignore)
   (declare (ignore follow-symlinks))
+  (when ignore (%h2a-pending 'fs-walk))
   (let ((out '()))
     (labels ((walk* (dir)
                (let* ((entries (fs-iterdir fs dir))
