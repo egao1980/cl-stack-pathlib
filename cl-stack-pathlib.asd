@@ -1,5 +1,5 @@
 (defsystem "cl-stack-pathlib"
-  :version "0.4.0"
+  :version "0.5.0"
   :description "CLOS paths + pluggable filesystems (pathlib/NIO-style) for cl-stack"
   :author "egao1980"
   :license "MIT"
@@ -18,7 +18,9 @@
                (:file "memory")
                (:file "facade")
                (:file "zip")
-               (:file "extensions"))
+               (:file "extensions")
+               (:file "snapshot")
+               (:file "area"))
   :in-order-to ((test-op (test-op "cl-stack-pathlib/tests"))))
 
 (defsystem "cl-stack-pathlib/tests"
@@ -43,7 +45,10 @@
                (:file "ignore-test")
                (:file "walk-ignore-test")
                (:file "grep-test")
-               (:file "stat-test"))
+               (:file "stat-test")
+               (:file "r4a-support")
+               (:file "snapshot-test")
+               (:file "area-test"))
   :perform (test-op (o c)
              (unless (symbol-call :rove :run c)
                (error "tests failed for ~A" (component-name c)))))
