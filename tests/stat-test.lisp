@@ -1,0 +1,72 @@
+(in-package #:cl-stack-pathlib/tests)
+
+;;; FS-STAT / STAT: kind, size, mtime, mode, lazy hash.
+
+(deftest-parametrize stat-file-and-directory
+    ((kind) :ids ("local" "memory") (:local) (:memory))
+  (with-backend (root kind)
+    (let ((p (join root "f.txt")))
+      (write-text p "hello")
+      (let ((st (stat p)))
+        (ok (typep st 'file-stat))
+        (ok (eq :file (file-stat-kind st)))
+        (ok (= 5 (file-stat-size st)))
+        (ok (integerp (file-stat-mtime st)))
+        (ok (<= (abs (- (file-stat-mtime st) (get-universal-time))) 120) "mtime is a recent universal time")
+        (ok (pathnamep (file-stat-path st)))
+        (ok (string= (file-stat-hash st) (octets-hash (octets "hello"))))
+        (ok (eq (file-stat-hash st) (file-stat-hash st)) "cached after the first call"))
+      ;; Lazy: the hash is taken at the first FILE-STAT-HASH call, not by STAT.
+      (let ((st (stat p)))
+        (write-text p "changed")
+        (ok (string= (file-stat-hash st) (octets-hash (octets "changed")))))
+      (let ((st (fs-stat (path-filesystem p) (path-pathname p))))
+        (ok (= 7 (file-stat-size st))))
+      (mkdir (join root "d") :parents t)
+      (let ((st (stat (join root "d"))))
+        (ok (eq :directory (file-stat-kind st)))
+        (ok (eql 0 (file-stat-size st)))
+        (ok (null (file-stat-hash st))))
+      (ok (signals (stat (join root "missing")) 'path-not-found)))))
+
+(deftest-parametrize stat-symlinks
+    ((kind) :ids ("local" "memory") (:local) (:memory))
+  ;; The local backend has no symlinks on Windows (fs-create-symlink is
+  ;; unsupported there), as in the other local symlink tests.
+  (if (and (eq kind :local) (uiop:os-windows-p))
+      (skip "local symlinks need unix")
+      (with-backend (root kind)
+        (let ((real (join root "real.txt"))
+              (link (join root "link")))
+          (write-text real "data")
+          (create-symlink link real)
+          (let ((followed (stat link))
+                (itself (stat link :follow-symlinks nil)))
+            (ok (eq :file (file-stat-kind followed)))
+            (ok (= 4 (file-stat-size followed)))
+            (ok (eq :symlink (file-stat-kind itself)))
+            (ok (null (file-stat-hash itself))))))))
+
+(deftest stat-mode-local
+  #+(and sbcl unix)
+  (with-backend (root :local)
+    (let ((p (join root "m.txt")))
+      (write-text p "x")
+      (sb-posix:chmod (as-posix p) #o604)
+      (ok (eql #o604 (file-stat-mode (stat p))))
+      (ok (integerp (file-stat-mode (stat root))))))
+  #-(and sbcl unix)
+  (skip "needs SBCL on unix"))
+
+(deftest stat-memory-and-zip-mode-unknown
+  (with-backend (root :memory)
+    (write-text (join root "f") "x")
+    (ok (null (file-stat-mode (stat (join root "f"))))))
+  (let ((fs (make-zip-fs '(("a/b.txt" "hello")))))
+    (with-filesystem (fs)
+      (let ((st (stat "/a/b.txt")))
+        (ok (eq :file (file-stat-kind st)))
+        (ok (= 5 (file-stat-size st)))
+        (ok (integerp (file-stat-mtime st)))
+        (ok (string= (file-stat-hash st) (octets-hash (octets "hello")))))
+      (ok (eq :directory (file-stat-kind (stat "/a")))))))

@@ -33,3 +33,17 @@ adaptation, note it next to that deftest and retain the relevant copyright line:
 > Copyright © 2001–present Python Software Foundation; All Rights Reserved.
 >
 > Copyright © Beman Dawes, Vladimir Prus et al.; Boost Software License 1.0.
+
+## H2a fixtures
+
+- **gitignore corpus** (`fixtures/gitignore-corpus.sexp`): the cases in
+  `fixtures/gitignore-cases.txt` are original, written from the rules in
+  gitignore(5) (https://git-scm.com/docs/gitignore). The expected verdicts are
+  not hand-written: `fixtures/gen-gitignore-corpus.py` builds each case as a
+  fresh git repository (`core.ignorecase=false`, `core.excludesFile=/dev/null`)
+  and records `git check-ignore -q` per path, cross-checked against
+  `git ls-files --others --ignored --exclude-standard`. Recorded with git
+  2.54.0 (Apple Git-157); the generator prints the git version into the file.
+- **SHA-256 vectors** (`hash-test.lisp`): FIPS 180-2 examples (empty, "abc",
+  the 448-bit message, one million "a"); padding-boundary digests computed with
+  `shasum -a 256`.

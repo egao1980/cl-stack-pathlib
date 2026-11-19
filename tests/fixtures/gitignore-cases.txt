@@ -1,0 +1,166 @@
+=case basic
+>
+*.log
+=paths
+a.log
+a.txt
+sub/b.log
+sub/deep/c.log
+log
+=case negation
+>
+*.log
+!keep.log
+=paths
+x.log
+keep.log
+sub/keep.log
+sub/y.log
+=case directory-only
+>
+build/
+=paths
+build/
+build/out.o
+src/build/
+src/build/x.o
+lib/build
+=case anchored-leading-slash
+>
+/top.txt
+=paths
+top.txt
+sub/top.txt
+=case anchored-middle-slash
+>
+doc/frotz/
+=paths
+doc/frotz/
+doc/frotz/a.txt
+a/doc/frotz/b.txt
+=case leading-double-star
+>
+**/foo
+**/qux/bar
+=paths
+foo
+a/foo
+a/b/foo
+qux/bar
+x/qux/bar
+x/bar
+=case trailing-double-star
+>
+abc/**
+=paths
+abc/x
+abc/y/z
+x/abc/y
+abcd/x
+=case middle-double-star
+>
+a/**/b
+=paths
+a/b
+a/x/b
+a/x/y/b
+a/xb
+c/a/b
+=case parent-excluded
+>
+build/
+!build/keep.txt
+=paths
+build/keep.txt
+build/other.txt
+=case reinclude-via-star
+>
+/*
+!/foo
+/foo/*
+!/foo/bar
+=paths
+top.txt
+foo/bar
+foo/baz
+other/x
+=case escapes-and-comments
+>
+# a comment
+\#hash
+\!bang
+trail\ 
+plain   
+=paths
+#hash
+!bang
+trail 
+plain
+a comment
+# a comment
+=case wildcards
+>
+file?.txt
+[ab]*.c
+[!a]x.c
+=paths
+file1.txt
+file10.txt
+fileX.txt
+a1.c
+b.c
+c.c
+bx.c
+ax.c
+=case star-no-slash
+>
+a/*.c
+=paths
+a/x.c
+a/b/x.c
+b/a/x.c
+=case bare-name-matches-directory
+>
+node_modules
+=paths
+node_modules/
+node_modules/x/y.js
+pkg/node_modules/z.js
+node_modulesx/a.js
+=case star-children
+>
+foo/*
+=paths
+foo/a
+foo/b/c
+x/foo/a
+=case nested
+>
+*.tmp
+>sub
+!keep.tmp
+/local.txt
+=paths
+a.tmp
+local.txt
+sub/keep.tmp
+sub/other.tmp
+sub/local.txt
+sub/deeper/local.txt
+keep.tmp
+=case negated-directory
+>
+logs/
+!logs/
+=paths
+logs/a.txt
+=case dir-only-negation-of-files
+>
+*
+!*/
+!*.lisp
+=paths
+a.lisp
+a.txt
+src/b.lisp
+src/b.txt
