@@ -132,6 +132,19 @@ Glob patterns use fnmatch rules on each `/`-separated segment: `*`, `?`, `[a-z]`
 
 Symlinks behave as in `os.walk` / pathlib on every backend. `walk` lists a link to a file (or a dangling link) in FILES and a link to a directory in DIRS. It walks a directory link only with `:follow-symlinks t`, and never one that leads back to a directory being walked. `glob` and `rglob` list links but never descend directory links, and their results stay under the base as spelled. `grep` skips links, as ripgrep does by default. `load-ignore-files` (`:ignore :auto`) never follows a link. `symlink-p` is true for a directory-form pathname of a link (`out/`). Memory filesystems resolve symlinks in parent directories, so `/link-to-dir/file` works there as it does on local. Temp names made by `fs-make-temp` no longer collide within one second.
 
+## Probes follow the final link (0.6.1)
+
+`exists-p`, `file-p`, `directory-p`, `readable-p`, `file-size`, `last-modified` and `stat` follow a symlink at the end of the path, as `stat(2)` does. They answer the same on the local and memory backends (zip archives have no links).
+
+| Path | `exists-p` / `file-p` / `directory-p` | `file-size`, `last-modified`, `stat` |
+|------|---------------------------------------|--------------------------------------|
+| link to a file | T / T / NIL | the file's |
+| link to a directory | T / NIL / T | `stat` is `:directory` |
+| dangling link | NIL | `path-not-found` |
+| link cycle | NIL | `symlink-loop` (a `path-error`, ELOOP) |
+
+`symlink-p` and `(stat p :follow-symlinks nil)` stay the `lstat(2)` view. On SBCL, local `file-p` / `exists-p` used to be true for a dangling link, because `probe-file` falls back to `lstat`. They now use `stat(2)` wherever there is a binding (SBCL and ECL on unix). The deprecated internals `%name-matches-p` and `%wild-pattern` are back as shims, so a backend that defines its own `fs-glob` against 0.5 still loads and runs.
+
 ## Amalgamates
 
 | Source | Ideas |

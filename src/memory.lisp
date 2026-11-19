@@ -44,7 +44,7 @@
 (defvar *mem-link-depth* 0)
 
 (defun %mem-symlink-loop (fs key)
-  (error 'path-error :filesystem fs :path key :message "too many levels of symbolic links"))
+  (error 'symlink-loop :filesystem fs :path key :message "too many levels of symbolic links"))
 
 (defun %mem-follow-symlink (fs key &optional visited)
   "KEY (parents already resolved) with symlinks at the leaf followed."
@@ -142,17 +142,38 @@ kept, as lstat(2) does)."
                      (subseq s 1)))
         pn)))
 
+(defun %mem-target-entry (fs pathname)
+  "(values entry found-p) of what PATHNAME refers to, every symlink followed
+(stat(2)): NIL NIL for a missing path or a dangling link. Signals
+SYMLINK-LOOP for a link cycle."
+  (gethash (%mem-real-key fs (fs-absolute fs pathname)) (memory-fs-root fs)))
+
+(defun %mem-probe (fs pathname)
+  "As %MEM-TARGET-ENTRY, but a link cycle is absent (NIL NIL), as a failing
+stat(2) is for the predicates."
+  (handler-case (%mem-target-entry fs pathname)
+    (symlink-loop () (values nil nil))))
+
+(defun %mem-target-file (fs pathname)
+  "The (:file …) entry PATHNAME refers to (links followed), else PATH-NOT-FOUND."
+  (let ((ent (%mem-target-entry fs pathname)))
+    (unless (and (consp ent) (eq (car ent) :file))
+      (error 'path-not-found :filesystem fs :path pathname
+                             :message "file does not exist"))
+    ent))
+
+;;; Probes follow a symlink at the leaf, as stat(2) and the local backend do;
+;;; FS-SYMLINK-P (and FS-STAT :FOLLOW-SYMLINKS NIL) is the lstat(2) view.
+
 (defmethod fs-exists-p ((fs memory-filesystem) pathname)
-  (let ((key (%mem-key fs (fs-absolute fs pathname))))
-    (nth-value 1 (gethash key (memory-fs-root fs)))))
+  (nth-value 1 (%mem-probe fs pathname)))
 
 (defmethod fs-file-p ((fs memory-filesystem) pathname)
-  (let ((ent (gethash (%mem-key fs (fs-absolute fs pathname)) (memory-fs-root fs))))
+  (let ((ent (%mem-probe fs pathname)))
     (and (consp ent) (eq (car ent) :file))))
 
 (defmethod fs-directory-p ((fs memory-filesystem) pathname)
-  (let ((key (%mem-key fs (fs-absolute fs pathname))))
-    (eq (gethash key (memory-fs-root fs)) :dir)))
+  (eq (%mem-probe fs pathname) :dir))
 
 (defmethod fs-symlink-p ((fs memory-filesystem) pathname)
   (let ((ent (gethash (%mem-key fs (fs-absolute fs pathname)) (memory-fs-root fs))))
@@ -170,16 +191,10 @@ kept, as lstat(2) does)."
   nil)
 
 (defmethod fs-file-size ((fs memory-filesystem) pathname)
-  (let ((ent (gethash (%mem-key fs (fs-absolute fs pathname)) (memory-fs-root fs))))
-    (unless (and (consp ent) (eq (car ent) :file))
-      (error 'path-not-found :filesystem fs :path pathname))
-    (length (second ent))))
+  (length (second (%mem-target-file fs pathname))))
 
 (defmethod fs-last-modified ((fs memory-filesystem) pathname)
-  (let ((ent (gethash (%mem-key fs (fs-absolute fs pathname)) (memory-fs-root fs))))
-    (unless (and (consp ent) (eq (car ent) :file))
-      (error 'path-not-found :filesystem fs :path pathname))
-    (third ent)))
+  (third (%mem-target-file fs pathname)))
 
 (defmethod fs-iterdir ((fs memory-filesystem) pathname)
   "Entries of the directory PATHNAME (a symlink to a directory is followed),
@@ -221,7 +236,8 @@ named under PATHNAME as given."
 (defmethod fs-mkdir ((fs memory-filesystem) pathname &key (parents t) (exist-ok t))
   (let* ((abs (uiop:ensure-directory-pathname (fs-absolute fs pathname)))
          (key (%mem-key fs abs)))
-    (when (fs-exists-p fs abs)
+    ;; A dangling link is there too: mkdir(2) fails with EEXIST.
+    (when (or (fs-exists-p fs abs) (fs-symlink-p fs abs))
       (unless (and exist-ok (fs-directory-p fs abs))
         (restart-case
             (error 'path-exists-error :filesystem fs :path abs)
@@ -240,7 +256,8 @@ named under PATHNAME as given."
 
 (defmethod fs-rmdir ((fs memory-filesystem) pathname)
   (let ((key (%mem-key fs (fs-absolute fs pathname))))
-    (unless (fs-directory-p fs pathname)
+    ;; Not through a link to a directory: rmdir(2) gives ENOTDIR.
+    (unless (and (fs-directory-p fs pathname) (not (fs-symlink-p fs pathname)))
       (return-from fs-rmdir
         (%restart-path-not-found fs pathname
                                  :message "directory does not exist"

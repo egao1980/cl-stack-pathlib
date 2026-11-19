@@ -14,7 +14,8 @@
 #+(and ecl unix)
 (progn
   (ffi:clines "#include <unistd.h>" "#include <limits.h>"
-              "#include <stdio.h>" "#include <sys/types.h>" "#include <sys/stat.h>")
+              "#include <stdio.h>" "#include <sys/types.h>" "#include <sys/stat.h>"
+              "#include <errno.h>")
   (defun %ecl-c (string)
     "STRING as a base-string holding its UTF-8 octets, one per character."
     (map 'base-string #'code-char (ext:string-to-octets string :external-format :utf-8)))
@@ -30,11 +31,13 @@
       (ffi:c-inline (namestring mode) (:cstring :int) :bool
                     "chmod(#0, (mode_t)#1) == 0" :one-liner t)))
   (defun %ecl-stat-mode (namestring follow)
-    "st_mode of NAMESTRING (stat, or lstat when FOLLOW is NIL), or -1."
+    "st_mode of NAMESTRING (stat, or lstat when FOLLOW is NIL), or -errno."
     (let ((namestring (%ecl-c namestring)))
       (ffi:c-inline (namestring follow) (:cstring :bool) :int
         "{ struct stat st; int r = (#1) ? stat(#0, &st) : lstat(#0, &st);
-           @(return) = (r == 0) ? (int)st.st_mode : -1; }")))
+           @(return) = (r == 0) ? (int)st.st_mode : -errno; }")))
+  (defun %ecl-eloop ()
+    (ffi:c-inline () () :int "ELOOP" :one-liner t))
   (defun %ecl-access-x-p (namestring)
     (let ((namestring (%ecl-c namestring)))
       (ffi:c-inline (namestring) (:cstring) :bool "access(#0, X_OK) == 0" :one-liner t)))
@@ -122,15 +125,28 @@ UIOP TRUENAMIZE alone is not enough — it succeeds for missing leaves."
         (fs-parse fs (uiop:parse-native-namestring (uiop:native-namestring (%expand-tilde-string s))))
         pn)))
 
+;;; stat(2) where there is a binding: a dangling link or a link cycle is
+;;; absent. SBCL's PROBE-FILE (under UIOP:FILE-EXISTS-P) falls back to lstat(2)
+;;; and finds both, so it only answers when there is no binding.
+
 (defmethod fs-exists-p ((fs local-filesystem) pathname)
-  (let ((pn (fs-parse fs pathname)))
-    (or (uiop:file-exists-p pn) (uiop:directory-exists-p pn))))
+  (multiple-value-bind (type reason) (%local-follow-mode fs pathname)
+    (cond (type t)
+          (reason nil)
+          (t (let ((pn (fs-parse fs pathname)))
+               (and (or (uiop:file-exists-p pn) (uiop:directory-exists-p pn)) t))))))
 
 (defmethod fs-file-p ((fs local-filesystem) pathname)
-  (and (uiop:file-exists-p (fs-parse fs pathname)) t))
+  (multiple-value-bind (type reason) (%local-follow-mode fs pathname)
+    (cond (type (= type #o100000))
+          (reason nil)
+          (t (and (uiop:file-exists-p (fs-parse fs pathname)) t)))))
 
 (defmethod fs-directory-p ((fs local-filesystem) pathname)
-  (and (uiop:directory-exists-p (fs-parse fs pathname)) t))
+  (multiple-value-bind (type reason) (%local-follow-mode fs pathname)
+    (cond (type (= type #o040000))
+          (reason nil)
+          (t (and (uiop:directory-exists-p (fs-parse fs pathname)) t)))))
 
 (defun %link-namestring (fs pathname)
   "Native namestring of PATHNAME in file form: a directory pathname such as
@@ -185,11 +201,13 @@ than the directory it points at."
   #-(or sbcl ecl) nil)
 
 (defmethod fs-file-size ((fs local-filesystem) pathname)
+  (%local-target-or-error fs pathname)
   (with-open-file (s (fs-parse fs pathname) :direction :input :element-type '(unsigned-byte 8)
                       :if-does-not-exist :error)
     (file-length s)))
 
 (defmethod fs-last-modified ((fs local-filesystem) pathname)
+  (%local-target-or-error fs pathname)
   (file-write-date (fs-parse fs pathname)))
 
 #+ecl
@@ -456,23 +474,54 @@ symlinks to directories included."
 
 (defun %local-raw-stat (pathname follow)
   "(values st_mode size mtime) of PATHNAME via stat(2) (lstat(2) when FOLLOW
-is NIL), or NIL when it fails or the implementation has no binding. SIZE
-and MTIME may be NIL (then the caller asks the portable way)."
+is NIL). SIZE and MTIME may be NIL (then the caller asks the portable way).
+On failure (values NIL reason): REASON is :LOOP for ELOOP, :MISSING for any
+other error, or NIL when the implementation has no binding (the caller asks
+the portable way)."
   #+(and sbcl unix)
   (let ((st (handler-case (if follow
                               (sb-posix:stat (%native pathname))
                               (sb-posix:lstat (%native pathname)))
-              (sb-posix:syscall-error () nil))))
-    (when st
-      (values (sb-posix:stat-mode st)
-              (sb-posix:stat-size st)
-              ;; Unix epoch → universal time.
-              (+ (sb-posix:stat-mtime st) 2208988800))))
+              (sb-posix:syscall-error (e)
+                (return-from %local-raw-stat
+                  (values nil (if (eql (sb-posix:syscall-errno e) sb-posix:eloop)
+                                  :loop
+                                  :missing))))
+              ;; No native namestring (a wild pathname): nothing there.
+              (error () (return-from %local-raw-stat (values nil :missing))))))
+    (values (sb-posix:stat-mode st)
+            (sb-posix:stat-size st)
+            ;; Unix epoch → universal time.
+            (+ (sb-posix:stat-mtime st) 2208988800)))
   #+(and ecl unix)
-  (let ((mode (%ecl-stat-mode (%native pathname) follow)))
-    (when (>= mode 0) (values mode nil nil)))
+  (let ((mode (handler-case (%ecl-stat-mode (%native pathname) follow)
+                (error () -1))))
+    (cond ((>= mode 0) (values mode nil nil))
+          ((= mode (- (%ecl-eloop))) (values nil :loop))
+          (t (values nil :missing))))
   #-(and (or sbcl ecl) unix)
   (progn pathname follow nil))
+
+(defun %local-follow-mode (fs pathname)
+  "(values file-type-bits reason) of what PATHNAME refers to, every symlink
+followed (stat(2)): bits #o040000 directory, #o100000 file, …; NIL and
+:MISSING / :LOOP when stat fails; NIL NIL without a stat binding."
+  (multiple-value-bind (raw reason)
+      (%local-raw-stat (uiop:merge-pathnames* (fs-parse fs pathname)) t)
+    (if raw
+        (values (logand raw #o170000) nil)
+        (values nil reason))))
+
+(defun %local-target-or-error (fs pathname)
+  "Signal PATH-NOT-FOUND (missing, dangling link) or SYMLINK-LOOP when stat(2)
+of PATHNAME fails; T when it succeeds, NIL without a stat binding."
+  (multiple-value-bind (type reason) (%local-follow-mode fs pathname)
+    (case reason
+      (:loop (error 'symlink-loop :filesystem fs :path pathname
+                                  :message "too many levels of symbolic links"))
+      (:missing (error 'path-not-found :filesystem fs :path pathname
+                                       :message "file does not exist"))
+      (t (and type t)))))
 
 (defun %local-chmod (pathname mode)
   #+(and sbcl unix) (sb-posix:chmod (%native pathname) mode)
@@ -633,8 +682,11 @@ included), so atomic writes go through links."
 (defmethod fs-stat ((fs local-filesystem) pathname &key (follow-symlinks t))
   (let ((pn (fs-parse fs pathname)))
     (multiple-value-bind (raw size mtime) (%local-raw-stat pn follow-symlinks)
-      (cond ((null raw)
-             (if (or (fs-exists-p fs pn) (fs-symlink-p fs pn))
+      (cond ((and (null raw) (eq size :loop))
+             (error 'symlink-loop :filesystem fs :path pn
+                                  :message "too many levels of symbolic links"))
+            ((null raw)
+             (if (and (null size) (or (fs-exists-p fs pn) (fs-symlink-p fs pn)))
                  (call-next-method)     ; no stat binding: portable, mode NIL
                  (error 'path-not-found :filesystem fs :path pn
                                         :message "path does not exist")))

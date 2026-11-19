@@ -23,6 +23,14 @@
                      (path-error-filesystem c)))))
 
 (define-condition path-not-found (path-error) ())
+(define-condition symlink-loop (path-error) ()
+  (:documentation "Too many levels of symbolic links (ELOOP): following a link
+at PATH, or in one of its parent directories, does not end. Signalled by the
+probes that need the target (FILE-SIZE, LAST-MODIFIED, STAT, reads); the
+predicates (EXISTS-P, FILE-P, DIRECTORY-P) answer NIL instead, as stat(2)
+failing does.")
+  (:report (lambda (c s)
+             (format s "too many levels of symbolic links: ~S" (path-error-path c)))))
 (define-condition missing-parent (path-not-found) ()
   (:documentation "Parent directory of PATH does not exist."))
 (define-condition path-exists-error (path-error) ())
