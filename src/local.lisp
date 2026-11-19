@@ -10,7 +10,18 @@
 ;;; ECL has no lstat/readlink/symlink bindings in EXT/SI.
 #+(and ecl unix)
 (progn
-  (ffi:clines "#include <unistd.h>" "#include <limits.h>")
+  (ffi:clines "#include <unistd.h>" "#include <limits.h>"
+              "#include <stdio.h>" "#include <sys/types.h>" "#include <sys/stat.h>")
+  (defun %ecl-rename (from to)
+    (ffi:c-inline (from to) (:cstring :cstring) :bool "rename(#0, #1) == 0" :one-liner t))
+  (defun %ecl-chmod (namestring mode)
+    (ffi:c-inline (namestring mode) (:cstring :int) :bool
+                  "chmod(#0, (mode_t)#1) == 0" :one-liner t))
+  (defun %ecl-stat-mode (namestring follow)
+    "st_mode of NAMESTRING (stat, or lstat when FOLLOW is NIL), or -1."
+    (ffi:c-inline (namestring follow) (:cstring :bool) :int
+      "{ struct stat st; int r = (#1) ? stat(#0, &st) : lstat(#0, &st);
+         @(return) = (r == 0) ? (int)st.st_mode : -1; }"))
   (defun %ecl-access-x-p (namestring)
     (ffi:c-inline (namestring) (:cstring) :bool "access(#0, X_OK) == 0" :one-liner t))
   (defun %ecl-symlink (target link)
@@ -159,28 +170,37 @@ UIOP TRUENAMIZE alone is not enough — it succeeds for missing leaves."
     (append (uiop:directory-files dir) (uiop:subdirectories dir))))
 
 (defmethod fs-glob ((fs local-filesystem) pathname pattern &key recursive ignore)
-  (when ignore (%h2a-pending 'fs-glob))
   (let* ((base (uiop:ensure-directory-pathname (fs-absolute fs pathname)))
          (pat (if recursive
                   (merge-pathnames
                    (make-pathname :directory '(:relative :wild-inferiors)
                                   :defaults (%wild-pattern pattern))
                    base)
-                  (merge-pathnames (%wild-pattern pattern) base))))
-    (directory pat)))
+                  (merge-pathnames (%wild-pattern pattern) base)))
+         ;; CL:DIRECTORY returns truenames: strip the base's truename.
+         (ignored-p (%ignore-predicate fs base ignore
+                                       :prefix-of (or (probe-file base) base)))
+         (found (directory pat)))
+    (if ignored-p
+        (remove-if (lambda (p) (funcall ignored-p p (uiop:directory-pathname-p p))) found)
+        found)))
 
 (defmethod fs-walk ((fs local-filesystem) pathname &key (top-down t) (follow-symlinks nil) ignore)
   (declare (ignore follow-symlinks))
-  (when ignore (%h2a-pending 'fs-walk))
-  (let ((out '()))
+  (let* ((out '())
+         (root (uiop:ensure-directory-pathname (fs-absolute fs pathname)))
+         (ignored-p (%ignore-predicate fs root ignore)))
     (labels ((walk* (dir)
                (let* ((dir (uiop:ensure-directory-pathname dir))
                       (files (ignore-errors (uiop:directory-files dir)))
                       (subs (ignore-errors (uiop:subdirectories dir))))
+                 (when ignored-p
+                   (setf files (remove-if (lambda (f) (funcall ignored-p f nil)) files)
+                         subs (remove-if (lambda (d) (funcall ignored-p d t)) subs)))
                  (when top-down (push (list dir files subs) out))
                  (dolist (s subs) (walk* s))
                  (unless top-down (push (list dir files subs) out)))))
-      (walk* (fs-absolute fs pathname))
+      (walk* root)
       (nreverse out))))
 
 (defmethod fs-mkdir ((fs local-filesystem) pathname &key (parents t) (exist-ok t))
@@ -363,6 +383,200 @@ UIOP TRUENAMIZE alone is not enough — it succeeds for missing leaves."
 
 (defmethod fs-as-uri ((fs local-filesystem) pathname)
   (format nil "file://~A" (uiop:unix-namestring (fs-absolute fs pathname))))
+
+;;; --- H2a: ranged / streaming reads, hashes, atomic writes, stat -------------
+
+(defun %native (pathname)
+  "OS namestring of PATHNAME (no wildcard escapes, unlike NAMESTRING)."
+  (uiop:native-namestring pathname))
+
+(defun %local-not-found (fs pathname)
+  (error 'path-not-found :filesystem fs :path pathname :message "file does not exist"))
+
+(defun %local-raw-stat (pathname follow)
+  "(values st_mode size mtime) of PATHNAME via stat(2) (lstat(2) when FOLLOW
+is NIL), or NIL when it fails or the implementation has no binding. SIZE
+and MTIME may be NIL (then the caller asks the portable way)."
+  #+(and sbcl unix)
+  (let ((st (handler-case (if follow
+                              (sb-posix:stat (%native pathname))
+                              (sb-posix:lstat (%native pathname)))
+              (sb-posix:syscall-error () nil))))
+    (when st
+      (values (sb-posix:stat-mode st)
+              (sb-posix:stat-size st)
+              ;; Unix epoch → universal time.
+              (+ (sb-posix:stat-mtime st) 2208988800))))
+  #+(and ecl unix)
+  (let ((mode (%ecl-stat-mode (%native pathname) follow)))
+    (when (>= mode 0) (values mode nil nil)))
+  #-(and (or sbcl ecl) unix)
+  (progn pathname follow nil))
+
+(defun %local-chmod (pathname mode)
+  #+(and sbcl unix) (sb-posix:chmod (%native pathname) mode)
+  #+(and ecl unix) (%ecl-chmod (%native pathname) mode)
+  #-(and (or sbcl ecl) unix) (progn pathname mode nil))
+
+(defun %local-rename (fs from to)
+  "rename(2) FROM over TO (atomic replace on POSIX); never CL:RENAME-FILE,
+which merges pathname defaults into TO."
+  #+(and sbcl unix)
+  (handler-case (sb-posix:rename (%native from) (%native to))
+    (sb-posix:syscall-error (e)
+      (error 'path-error :filesystem fs :path to
+                         :message (format nil "rename(2) failed: ~A" e))))
+  #+(and ecl unix)
+  (unless (%ecl-rename (%native from) (%native to))
+    (error 'path-error :filesystem fs :path to :message "rename(2) failed"))
+  #-(and (or sbcl ecl) unix)
+  (progn fs (uiop:rename-file-overwriting-target from to)))
+
+(defmethod fs-read-range ((fs local-filesystem) pathname start end)
+  (%check-range start end)
+  (let ((pn (fs-parse fs pathname)))
+    (with-open-file (s pn :element-type '(unsigned-byte 8) :if-does-not-exist nil)
+      (unless s (%local-not-found fs pn))
+      (let* ((n (file-length s))
+             (b (min start n))
+             (e (max b (min (or end n) n)))
+             (buf (make-array (- e b) :element-type '(unsigned-byte 8))))
+        (file-position s b)
+        (let ((got (read-sequence buf s)))
+          (if (= got (length buf)) buf (subseq buf 0 got)))))))
+
+(defmethod fs-read-lines ((fs local-filesystem) pathname &key (start 1) end)
+  ;; Octet stream split at LF, each line decoded like READ-TEXT: same result
+  ;; as the portable default, but reading stops at line END + 1.
+  (check-type start (integer 1))
+  (check-type end (or null (integer 0)))
+  (let ((pn (fs-parse fs pathname)))
+    (with-open-file (s pn :element-type '(unsigned-byte 8) :if-does-not-exist nil)
+      (unless s (%local-not-found fs pn))
+      (let ((buf (make-array 256 :element-type '(unsigned-byte 8) :adjustable t :fill-pointer 0))
+            (out '())
+            (no 0))
+        (flet ((next-line ()
+                 ;; Octets of the next line without its LF, or NIL at EOF.
+                 (setf (fill-pointer buf) 0)
+                 (loop for b = (read-byte s nil nil)
+                       do (cond ((null b) (return (and (plusp (fill-pointer buf)) buf)))
+                                ((= b 10) (return buf))
+                                (t (vector-push-extend b buf))))))
+          (loop for line = (next-line)
+                while line
+                do (incf no)
+                   (cond ((and end (> no end))
+                          (return-from fs-read-lines (values (nreverse out) t)))
+                         ((>= no start)
+                          (let ((len (fill-pointer line)))
+                            (when (and (plusp len) (= 13 (aref line (1- len))))
+                              (decf (fill-pointer line))))
+                          (push (coerce (utf8-octets-to-string line) 'simple-string) out))))
+          (values (nreverse out) nil))))))
+
+(defmethod fs-content-hash ((fs local-filesystem) pathname)
+  (let ((pn (fs-parse fs pathname)))
+    (when (fs-directory-p fs pn)
+      (error 'path-error :filesystem fs :path pn :message "is a directory"))
+    (with-open-file (s pn :element-type '(unsigned-byte 8) :if-does-not-exist nil)
+      (unless s (%local-not-found fs pn))
+      (let ((state (%sha256-init))
+            (buf (make-array 65536 :element-type '(unsigned-byte 8))))
+        (loop for n = (read-sequence buf s)
+              while (plusp n)
+              do (%sha256-update state buf :end n))
+        (%sha256-final state)))))
+
+(defmethod fs-open ((fs local-filesystem) pathname &key (direction :input) (element-type '(unsigned-byte 8)))
+  (let ((kind (%check-open-args fs pathname direction element-type))
+        (pn (fs-parse fs pathname)))
+    (when (fs-directory-p fs pn)
+      (error 'path-error :filesystem fs :path pn :message "is a directory"))
+    (or (if (eq kind :characters)
+            (open pn :direction :input :element-type 'character
+                     :external-format :utf-8 :if-does-not-exist nil)
+            (open pn :direction :input :element-type '(unsigned-byte 8)
+                     :if-does-not-exist nil))
+        (%local-not-found fs pn))))
+
+(defvar *atomic-random-state* nil
+  "Random state for temp file names, seeded on first use (so images started
+from one core do not pick the same names).")
+
+(defun %atomic-temp-name (target)
+  (let ((state (or *atomic-random-state*
+                   (setf *atomic-random-state* (make-random-state t)))))
+    (format nil ".~A.~(~8,'0x~).tmp" (%entry-name target) (random #x100000000 state))))
+
+(defun %local-write-target (fs pathname)
+  "PATHNAME, or the file its symlink chain ends in (a dangling link's target
+included), so atomic writes go through links."
+  (let ((pn pathname))
+    (loop repeat 40
+          while (fs-symlink-p fs pn)
+          do (let ((to (fs-read-symlink fs pn)))
+               (setf pn (if (uiop:absolute-pathname-p to)
+                            to
+                            (uiop:merge-pathnames* to (uiop:pathname-directory-pathname pn))))))
+    pn))
+
+(defmethod fs-write-atomic ((fs local-filesystem) pathname bytes &key expected-hash)
+  (let* ((pn (fs-parse fs pathname))
+         (vec (%coerce-octets bytes))
+         (target (%local-write-target fs (fs-absolute fs pn))))
+    (when (fs-directory-p fs target)
+      (error 'path-error :filesystem fs :path pn :message "target is a directory"))
+    (multiple-value-bind (proceed current)
+        (%check-expected-hash fs pn expected-hash
+                              (lambda ()
+                                (and (fs-file-p fs target) (fs-content-hash fs target))))
+      (unless proceed
+        (return-from fs-write-atomic (values pn current nil))))
+    (ensure-directories-exist target)
+    (let ((mode (let ((m (%local-raw-stat target t)))
+                  (and m (logand m #o7777))))
+          (tmp (uiop:merge-pathnames* (uiop:parse-unix-namestring (%atomic-temp-name target))
+                                      (uiop:pathname-directory-pathname target)))
+          (created nil)
+          (done nil))
+      (unwind-protect
+           (progn
+             (with-open-file (s tmp :direction :output :element-type '(unsigned-byte 8)
+                                    :if-exists :error :if-does-not-exist :create)
+               (setf created t)
+               (write-sequence vec s)
+               (finish-output s))
+             (when mode (%local-chmod tmp mode))
+             (%local-rename fs tmp target)
+             (setf done t))
+        (when (and created (not done))
+          (handler-case (delete-file tmp)
+            (file-error () nil)))))
+    (values pn (octets-hash vec) t)))
+
+(defmethod fs-stat ((fs local-filesystem) pathname &key (follow-symlinks t))
+  (let ((pn (fs-parse fs pathname)))
+    (multiple-value-bind (raw size mtime) (%local-raw-stat pn follow-symlinks)
+      (cond ((null raw)
+             (if (or (fs-exists-p fs pn) (fs-symlink-p fs pn))
+                 (call-next-method)     ; no stat binding: portable, mode NIL
+                 (error 'path-not-found :filesystem fs :path pn
+                                        :message "path does not exist")))
+            (t
+             (let ((kind (case (logand raw #o170000)
+                           (#o040000 :directory)
+                           (#o100000 :file)
+                           (#o120000 :symlink)
+                           (t :other))))
+               (make-instance 'file-stat
+                              :path pn :kind kind
+                              :size (if (eq kind :file) (or size (fs-file-size fs pn)) 0)
+                              :mtime (or mtime
+                                         (and (not (eq kind :symlink))
+                                              (file-write-date pn)))
+                              :mode (logand raw #o7777)
+                              :filesystem fs)))))))
 
 (defvar *local-filesystem* (make-local-filesystem)
   "Process-wide local FS used by file:// URIs and the default *FILESYSTEM*.")

@@ -164,10 +164,6 @@ line returning the match start or NIL. The default signals
 UNSUPPORTED-OPERATION (cl-stack-pathlib carries no regex engine); a system
 that loads one specializes this."))
 
-(defun %h2a-pending (operation)
-  "Contract stub. Remove with the H2a implementation."
-  (error "cl-stack-pathlib: ~S is not implemented yet (H2a contract stub)" operation))
-
 (defmethod fs-symlink-p ((fs filesystem) pathname)
   (declare (ignore pathname))
   nil)
@@ -182,3 +178,29 @@ that loads one specializes this."))
 (defmethod fs-make-temp ((fs filesystem) &key directory prefix suffix)
   (declare (ignore directory prefix suffix))
   (%unsupported fs 'fs-make-temp nil))
+
+;;; --- H2a value classes (defined here so backends can make them) ----------
+
+(defclass file-stat ()
+  ((path :initarg :path :reader file-stat-path
+         :documentation "Pathname within the filesystem, as passed to FS-STAT.")
+   (kind :initarg :kind :reader file-stat-kind
+         :documentation ":FILE, :DIRECTORY, :SYMLINK (only with :FOLLOW-SYMLINKS NIL) or :OTHER.")
+   (size :initarg :size :reader file-stat-size
+         :documentation "Octets; 0 for directories.")
+   (mtime :initarg :mtime :reader file-stat-mtime :initform nil
+          :documentation "Universal time, or NIL when the backend does not track it.")
+   (mode :initarg :mode :reader file-stat-mode :initform nil
+         :documentation "Permission bits (LOGAND st_mode #o7777), or NIL when unknown.")
+   (filesystem :initarg :filesystem :reader %file-stat-filesystem)
+   (hash :initform nil :accessor %file-stat-hash-cache))
+  (:documentation "Result of FS-STAT. FILE-STAT-HASH is computed on first call."))
+
+(defclass grep-match ()
+  ((path :initarg :path :reader grep-match-path
+         :documentation "Pathname from FS-GREP; PATH from the facade GREP.")
+   (line :initarg :line :reader grep-match-line :documentation "1-based line number.")
+   (column :initarg :column :reader grep-match-column
+           :documentation "0-based character index of the first match on the line.")
+   (text :initarg :text :reader grep-match-text :documentation "The line, without terminator."))
+  (:documentation "One matching line. Several matches on one line give one GREP-MATCH."))

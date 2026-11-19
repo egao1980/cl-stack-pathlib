@@ -51,6 +51,34 @@ Virtual FS support: specialize `filesystem` (shipped: `local-filesystem`, `memor
 
 Nickname: `stack-pathlib` only — not `path` (clashes with cl-fad / filepaths).
 
+## Agent-tool operations (0.4.0, H2a)
+
+Pure Lisp, no extra dependencies. Portable defaults on `filesystem` (memory and zip get them as-is); `local-filesystem` specializes where streaming or the OS matters.
+
+```lisp
+(read-range "big.bin" 1024 2048)              ; octets [START, END)
+(read-lines "src/x.lisp" :start 10 :end 20)   ; → (values lines more-p), 1-based
+(with-open-path (in "a.txt" :element-type 'character) (read-line in))
+
+(content-hash "a.txt")                        ; "sha256:…" (SHA-256, FIPS 180-4)
+(octets-hash #(97 98 99))
+
+;; atomic (temp file + rename(2)) and compare-and-swap writes
+(multiple-value-bind (p hash) (write-text "a.txt" "v1" :atomic t)
+  (write-text p "v2" :expected-hash hash))    ; CONTENT-HASH-MISMATCH if it changed
+(handler-bind ((content-hash-mismatch #'invoke-use-current))   ; or #'auto-overwrite
+  (write-text "a.txt" "mine" :expected-hash :absent))
+
+(file-stat-mode (stat "a.txt"))               ; kind / size / mtime / mode; lazy FILE-STAT-HASH
+
+;; .gitignore / .ignore semantics (gitignore(5); verified against git)
+(walk "." :ignore :auto)                      ; ignored dirs are pruned, .git/ always
+(rglob "." "*.lisp" :ignore (parse-ignore "build/"))
+(grep "." "defun" :include "*.lisp" :max-results 50)   ; → (values matches truncated-p)
+```
+
+`grep` takes a literal string or a function `line → start | NIL`; `:regex t` goes through the hook `fs-grep-matcher`, which refuses by default (pathlib has no regex engine). Zip is read-only: `fs-write-atomic` signals `unsupported-operation`.
+
 ## Amalgamates
 
 | Source | Ideas |

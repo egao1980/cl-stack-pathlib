@@ -168,20 +168,20 @@
     (nreverse out)))
 
 (defmethod fs-glob ((fs memory-filesystem) pathname pattern &key recursive ignore)
-  (when ignore (%h2a-pending 'fs-glob))
   (let* ((base-key (%mem-key fs (fs-absolute fs pathname)))
          (prefix (if (string= base-key "/")
                      "/"
                      (concatenate 'string base-key "/")))
+         (matcher (%resolve-ignore fs pathname ignore))
          (out '()))
     (maphash
      (lambda (k v)
-       (declare (ignore v))
        (when (uiop:string-prefix-p prefix k)
          (let* ((rel (subseq k (length prefix)))
                 (nm (file-namestring k))
                 (nested-p (find #\/ rel)))
            (when (and (plusp (length rel))
+                      (not (and matcher (ignore-path-p matcher rel :directory (eq v :dir))))
                       (or recursive (find #\/ pattern) (not nested-p))
                       (if (find #\/ pattern)
                           (pathname-match-p rel (%wild-pattern pattern))
@@ -192,16 +192,20 @@
 
 (defmethod fs-walk ((fs memory-filesystem) pathname &key (top-down t) follow-symlinks ignore)
   (declare (ignore follow-symlinks))
-  (when ignore (%h2a-pending 'fs-walk))
-  (let ((out '()))
+  (let* ((out '())
+         (root (fs-absolute fs pathname))
+         (ignored-p (%ignore-predicate fs root ignore)))
     (labels ((walk* (dir)
                (let* ((entries (fs-iterdir fs dir))
                       (files (remove-if-not (lambda (p) (fs-file-p fs p)) entries))
                       (dirs (remove-if-not (lambda (p) (fs-directory-p fs p)) entries)))
+                 (when ignored-p
+                   (setf files (remove-if (lambda (f) (funcall ignored-p f nil)) files)
+                         dirs (remove-if (lambda (d) (funcall ignored-p d t)) dirs)))
                  (when top-down (push (list dir files dirs) out))
                  (dolist (d dirs) (walk* d))
                  (unless top-down (push (list dir files dirs) out)))))
-      (walk* (fs-absolute fs pathname))
+      (walk* root)
       (nreverse out))))
 
 (defmethod fs-mkdir ((fs memory-filesystem) pathname &key (parents t) (exist-ok t))
@@ -413,3 +417,38 @@
 
 (defmethod fs-as-uri ((fs memory-filesystem) pathname)
   (format nil "memory://~A" (%mem-key fs (fs-absolute fs pathname))))
+
+;;; --- H2a: atomic writes and streams ----------------------------------------
+
+(defun %mem-file-entry (fs key)
+  (let ((ent (gethash key (memory-fs-root fs))))
+    (and (consp ent) (eq (car ent) :file) ent)))
+
+(defmethod fs-write-atomic ((fs memory-filesystem) pathname bytes &key expected-hash)
+  ;; One table update: readers see the old entry or the new one.
+  (let* ((abs (fs-absolute fs pathname))
+         (vec (copy-seq (%coerce-octets bytes)))   ; checked + unaliased before any change
+         (key (%mem-follow-symlink fs (%mem-key fs abs)))
+         (root (memory-fs-root fs)))
+    (when (eq (gethash key root) :dir)
+      (error 'path-error :filesystem fs :path abs :message "target is a directory"))
+    (multiple-value-bind (proceed current)
+        (%check-expected-hash fs abs expected-hash
+                              (lambda ()
+                                (let ((ent (%mem-file-entry fs key)))
+                                  (and ent (octets-hash (second ent))))))
+      (unless proceed
+        (return-from fs-write-atomic (values abs current nil))))
+    (fs-mkdir fs (fs-parent fs (fs-parse fs key)) :parents t :exist-ok t)
+    (setf (gethash key root) (list :file vec (get-universal-time)))
+    (values abs (octets-hash vec) t)))
+
+(defmethod fs-open ((fs memory-filesystem) pathname &key (direction :input) (element-type '(unsigned-byte 8)))
+  ;; Entries are replaced, never mutated in place, so the stored vector is a
+  ;; stable snapshot for the stream: no copy.
+  (let* ((kind (%check-open-args fs pathname direction element-type))
+         (abs (fs-absolute fs pathname))
+         (ent (%mem-file-entry fs (%mem-follow-symlink fs (%mem-key fs abs)))))
+    (unless ent
+      (error 'path-not-found :filesystem fs :path abs :message "file does not exist"))
+    (%octets-input-stream fs abs (second ent) kind)))
