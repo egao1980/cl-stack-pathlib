@@ -31,17 +31,21 @@
 
 (deftest-parametrize stat-symlinks
     ((kind) :ids ("local" "memory") (:local) (:memory))
-  (with-backend (root kind)
-    (let ((real (join root "real.txt"))
-          (link (join root "link")))
-      (write-text real "data")
-      (create-symlink link real)
-      (let ((followed (stat link))
-            (itself (stat link :follow-symlinks nil)))
-        (ok (eq :file (file-stat-kind followed)))
-        (ok (= 4 (file-stat-size followed)))
-        (ok (eq :symlink (file-stat-kind itself)))
-        (ok (null (file-stat-hash itself)))))))
+  ;; The local backend has no symlinks on Windows (fs-create-symlink is
+  ;; unsupported there), as in the other local symlink tests.
+  (if (and (eq kind :local) (uiop:os-windows-p))
+      (skip "local symlinks need unix")
+      (with-backend (root kind)
+        (let ((real (join root "real.txt"))
+              (link (join root "link")))
+          (write-text real "data")
+          (create-symlink link real)
+          (let ((followed (stat link))
+                (itself (stat link :follow-symlinks nil)))
+            (ok (eq :file (file-stat-kind followed)))
+            (ok (= 4 (file-stat-size followed)))
+            (ok (eq :symlink (file-stat-kind itself)))
+            (ok (null (file-stat-hash itself))))))))
 
 (deftest stat-mode-local
   #+(and sbcl unix)
