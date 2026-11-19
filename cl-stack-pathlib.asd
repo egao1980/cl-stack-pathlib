@@ -1,9 +1,10 @@
 (defsystem "cl-stack-pathlib"
-  :version "0.3.1"
+  :version "0.3.2"
   :description "CLOS paths + pluggable filesystems (pathlib/NIO-style) for cl-stack"
   :author "egao1980"
   :license "MIT"
-  :depends-on ("uiop" "compression-protocol" "compression-backend-chipz")
+  :depends-on ("uiop" (:feature :sbcl "sb-posix")
+               "compression-protocol" "compression-backend-chipz")
 
   :serial t
   :pathname "src"
