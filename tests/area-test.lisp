@@ -315,3 +315,15 @@ adds n.txt without conflict. Returns (values area base)."
         (let ((a (open-area base :directory empty)))
           (ok (equal (walk-files base) (walk-files (area-root a))))
           (close-area a))))))
+
+(deftest-parametrize make-temp-names-are-unique
+    ((kind) :ids ("local" "memory") (:local) (:memory))
+  ;; #25: names made within one second must not collide.
+  (with-backend (root kind)
+    (let* ((fs (path-filesystem root))
+           (names (loop repeat 50
+                        collect (namestring (fs-make-temp fs :directory (path-pathname root))))))
+      (ok (= 50 (length (remove-duplicates names :test #'string=)))))
+    (let ((dirs (loop repeat 20 collect (as-posix (make-temp-directory :directory root)))))
+      (ok (= 20 (length (remove-duplicates dirs :test #'string=))))
+      (ok (every #'directory-p dirs)))))

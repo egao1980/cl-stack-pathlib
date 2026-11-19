@@ -132,14 +132,26 @@ UIOP TRUENAMIZE alone is not enough — it succeeds for missing leaves."
 (defmethod fs-directory-p ((fs local-filesystem) pathname)
   (and (uiop:directory-exists-p (fs-parse fs pathname)) t))
 
+(defun %link-namestring (fs pathname)
+  "Native namestring of PATHNAME in file form: a directory pathname such as
+dir/link/ loses its trailing slash, so lstat(2) sees the link itself rather
+than the directory it points at."
+  (let ((s (uiop:native-namestring (fs-parse fs pathname))))
+    (if (and (> (length s) 1) (char= (char s (1- (length s))) #\/))
+        (subseq s 0 (1- (length s)))
+        s)))
+
 (defmethod fs-symlink-p ((fs local-filesystem) pathname)
   #+sbcl
   (handler-case
-      (let ((stat (sb-posix:lstat (namestring (fs-parse fs pathname)))))
+      (let ((stat (sb-posix:lstat (%link-namestring fs pathname))))
         (sb-posix:s-islnk (sb-posix:stat-mode stat)))
     (error () nil))
-  #+ecl
-  (eq (ignore-errors (ext:file-kind (namestring (fs-parse fs pathname)) nil)) :link)
+  #+(and ecl unix)
+  (let ((mode (%ecl-stat-mode (%link-namestring fs pathname) nil)))
+    (and (>= mode 0) (= (logand mode #o170000) #o120000)))
+  #+(and ecl (not unix))
+  (eq (ignore-errors (ext:file-kind (%link-namestring fs pathname) nil)) :link)
   #-(or sbcl ecl) nil)
 
 (defmethod fs-readable-p ((fs local-filesystem) pathname)
@@ -180,30 +192,56 @@ UIOP TRUENAMIZE alone is not enough — it succeeds for missing leaves."
 (defmethod fs-last-modified ((fs local-filesystem) pathname)
   (file-write-date (fs-parse fs pathname)))
 
+#+ecl
+(defun %ecl-directory-link-p (pathname)
+  "True when the file-form PATHNAME is a symlink to a directory."
+  #+unix
+  (let* ((ns (uiop:native-namestring pathname))
+         (lmode (%ecl-stat-mode ns nil))
+         (mode (%ecl-stat-mode ns t)))
+    (and (>= lmode 0) (>= mode 0)
+         (= (logand lmode #o170000) #o120000)
+         (= (logand mode #o170000) #o040000)))
+  #-unix (progn pathname nil))
+
+#+ecl
+(defun %ecl-file-entries (dir)
+  "Non-directory entries of DIR as DIR/name, links unresolved."
+  (loop for e in (directory (merge-pathnames uiop:*wild-file-for-directory* dir)
+                            :resolve-symlinks nil)
+        unless (uiop:directory-pathname-p e)
+          collect (make-pathname :name (pathname-name e) :type (pathname-type e)
+                                 :version nil :defaults dir)))
+
 (defun %local-files (dir)
   "Non-directory entries of the directory DIR, as DIR/name. A symlink is
 listed under its own name, never as its target: ECL's UIOP:DIRECTORY-FILES
 resolves links (a link to real.txt shows up as a second real.txt), so ECL
 asks DIRECTORY not to, and rebuilds each entry on DIR (ECL's DIRECTORY
-returns DIR's truename, /private/var/... for /var/... on macOS)."
+returns DIR's truename, /private/var/... for /var/... on macOS). A link to
+a directory is a subdirectory (see %LOCAL-SUBDIRECTORIES), as on SBCL."
   #+ecl
-  (loop for e in (directory (merge-pathnames uiop:*wild-file-for-directory* dir)
-                            :resolve-symlinks nil)
-        unless (uiop:directory-pathname-p e)
-          collect (make-pathname :name (pathname-name e) :type (pathname-type e)
-                                 :version nil :defaults dir))
+  (remove-if #'%ecl-directory-link-p (%ecl-file-entries dir))
   #-ecl
   (uiop:directory-files dir))
 
 (defun %local-subdirectories (dir)
-  "Subdirectories of the directory DIR, as DIR/name/ (see %LOCAL-FILES)."
+  "Subdirectories of the directory DIR, as DIR/name/ (see %LOCAL-FILES),
+symlinks to directories included."
   #+ecl
-  (loop for e in (directory (merge-pathnames (make-pathname :directory '(:relative :wild)) dir)
-                            :resolve-symlinks nil)
-        collect (merge-pathnames
-                 (make-pathname :directory (list :relative (car (last (pathname-directory e))))
-                                :name nil :type nil :version nil)
-                 dir))
+  (flet ((sub (name)
+           (merge-pathnames (make-pathname :directory (list :relative name)
+                                           :name nil :type nil :version nil)
+                            dir)))
+    (remove-duplicates
+     (append
+      (loop for e in (directory (merge-pathnames (make-pathname :directory '(:relative :wild)) dir)
+                                :resolve-symlinks nil)
+            collect (sub (car (last (pathname-directory e)))))
+      (loop for f in (%ecl-file-entries dir)
+            when (%ecl-directory-link-p f)
+              collect (sub (%file-namestring* f))))
+     :test #'equal :from-end t))
   #-ecl
   (uiop:subdirectories dir))
 
@@ -213,39 +251,15 @@ returns DIR's truename, /private/var/... for /var/... on macOS)."
       (error 'path-not-found :filesystem fs :path dir))
     (append (%local-files dir) (%local-subdirectories dir))))
 
-(defmethod fs-glob ((fs local-filesystem) pathname pattern &key recursive ignore)
-  (let* ((base (uiop:ensure-directory-pathname (fs-absolute fs pathname)))
-         (pat (if recursive
-                  (merge-pathnames
-                   (make-pathname :directory '(:relative :wild-inferiors)
-                                  :defaults (%wild-pattern pattern))
-                   base)
-                  (merge-pathnames (%wild-pattern pattern) base)))
-         ;; CL:DIRECTORY returns truenames: strip the base's truename.
-         (ignored-p (%ignore-predicate fs base ignore
-                                       :prefix-of (or (probe-file base) base)))
-         (found (directory pat)))
-    (if ignored-p
-        (remove-if (lambda (p) (funcall ignored-p p (uiop:directory-pathname-p p))) found)
-        found)))
-
 (defmethod fs-walk ((fs local-filesystem) pathname &key (top-down t) (follow-symlinks nil) ignore)
-  (declare (ignore follow-symlinks))
-  (let* ((out '())
-         (root (uiop:ensure-directory-pathname (fs-absolute fs pathname)))
-         (ignored-p (%ignore-predicate fs root ignore)))
-    (labels ((walk* (dir)
-               (let* ((dir (uiop:ensure-directory-pathname dir))
-                      (files (ignore-errors (%local-files dir)))
-                      (subs (ignore-errors (%local-subdirectories dir))))
-                 (when ignored-p
-                   (setf files (remove-if (lambda (f) (funcall ignored-p f nil)) files)
-                         subs (remove-if (lambda (d) (funcall ignored-p d t)) subs)))
-                 (when top-down (push (list dir files subs) out))
-                 (dolist (s subs) (walk* s))
-                 (unless top-down (push (list dir files subs) out)))))
-      (walk* root)
-      (nreverse out))))
+  (let ((root (uiop:ensure-directory-pathname (fs-absolute fs pathname))))
+    (%walk-tree fs root
+                (lambda (dir)
+                  (let ((dir (uiop:ensure-directory-pathname dir)))
+                    (values (ignore-errors (%local-files dir))
+                            (ignore-errors (%local-subdirectories dir)))))
+                :top-down top-down :follow-symlinks follow-symlinks
+                :ignored-p (%ignore-predicate fs root ignore))))
 
 (defmethod fs-mkdir ((fs local-filesystem) pathname &key (parents t) (exist-ok t))
   (let ((dir (uiop:ensure-directory-pathname (fs-parse fs pathname))))
@@ -412,7 +426,10 @@ returns DIR's truename, /private/var/... for /var/... on macOS)."
 (defmethod fs-make-temp ((fs local-filesystem) &key (directory nil) (prefix "cl-stack-") (suffix ""))
   (let* ((dir (uiop:ensure-directory-pathname
                (or directory (uiop:temporary-directory))))
-         (name (format nil "~A~A~A" prefix (get-universal-time) (random 100000))))
+         (name (loop for name = (format nil "~A~A" prefix (%temp-name-token))
+                     unless (or (probe-file (merge-pathnames name dir))
+                                (probe-file (merge-pathnames (concatenate 'string name suffix) dir)))
+                       return name)))
     (if (and suffix (plusp (length suffix)))
         (merge-pathnames (make-pathname :name name :type (string-left-trim "." suffix)) dir)
         (merge-pathnames (make-pathname :name name) dir))))
@@ -530,7 +547,7 @@ which merges pathname defaults into TO."
                           (let ((len (fill-pointer line)))
                             (when (and (plusp len) (= 13 (aref line (1- len))))
                               (decf (fill-pointer line))))
-                          (push (coerce (utf8-octets-to-string line) 'simple-string) out))))
+                          (push (coerce (utf8-decode line) 'simple-string) out))))
           (values (nreverse out) nil))))))
 
 (defmethod fs-content-hash ((fs local-filesystem) pathname)

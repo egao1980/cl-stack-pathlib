@@ -1,5 +1,5 @@
 (defsystem "cl-stack-pathlib"
-  :version "0.5.0"
+  :version "0.6.0"
   :description "CLOS paths + pluggable filesystems (pathlib/NIO-style) for cl-stack"
   :author "egao1980"
   :license "MIT"
@@ -10,10 +10,12 @@
   :pathname "src"
   :components ((:file "package")
                (:file "conditions")
+               (:file "utf8")
                (:file "protocol")
                (:file "path")
                (:file "hash")
                (:file "ignore")
+               (:file "walk")
                (:file "local")
                (:file "memory")
                (:file "facade")
@@ -48,7 +50,10 @@
                (:file "stat-test")
                (:file "r4a-support")
                (:file "snapshot-test")
-               (:file "area-test"))
+               (:file "area-test")
+               (:file "utf8-test")
+               (:file "glob-test")
+               (:file "symlink-walk-test"))
   :perform (test-op (o c)
              (unless (symbol-call :rove :run c)
                (error "tests failed for ~A" (component-name c)))))

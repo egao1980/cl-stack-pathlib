@@ -119,10 +119,10 @@ OCTETS-HASH of the result is the snapshot id."
           when (string= (snapshot-entry-path a) (snapshot-entry-path b))
             do (error "Duplicate path ~S in a snapshot manifest." (snapshot-entry-path a)))
     (flet ((put (octets) (loop for o across octets do (vector-push-extend o out))))
-      (put (utf8-string-to-octets +snapshot-manifest-header+))
+      (put (utf8-encode +snapshot-manifest-header+))
       (vector-push-extend 10 out)
       (dolist (e sorted)
-        (let ((path (utf8-string-to-octets (snapshot-entry-path e)))
+        (let ((path (utf8-encode (snapshot-entry-path e)))
               (hash (snapshot-entry-hash e)))
           (unless (%snapshot-digest-p hash)
             (error "Snapshot entry ~S has a malformed hash ~S." (snapshot-entry-path e) hash))
@@ -184,7 +184,7 @@ OCTETS-HASH of the result is the snapshot id."
                      (let ((n (parse-integer digits)))
                        (unless (and (plusp n) (<= (+ i n 1) len))
                          (bad "path of ~D octets at ~D overruns the manifest" n i))
-                       (let ((path (or (%utf8-decode-strict (subseq v i (+ i n)))
+                       (let ((path (or (%utf8-decode-or-nil (subseq v i (+ i n)))
                                        (bad "invalid UTF-8 path at ~D" i))))
                          (incf i n)
                          (expect 10)
@@ -394,7 +394,7 @@ are never followed. Other kinds (fifos, sockets) are skipped."
 
 (defun %symlink-octets (fs pathname)
   "The symlink's content: UTF-8 of the posix namestring of its target."
-  (%coerce-octets (utf8-string-to-octets (%pathname-as-posix (fs-read-symlink fs pathname)))))
+  (%coerce-octets (utf8-encode (%pathname-as-posix (fs-read-symlink fs pathname)))))
 
 (defun %node-entry (fs node &key store)
   "SNAPSHOT-ENTRY of a :FILE or :SYMLINK node. With STORE the content is put
@@ -498,7 +498,7 @@ target) is OCTETS."
       (:symlink
        (when (fs-file-p fs pn) (fs-unlink fs pn))
        (fs-mkdir fs (fs-parent fs pn) :parents t :exist-ok t)
-       (fs-create-symlink fs pn (utf8-octets-to-string octets)))
+       (fs-create-symlink fs pn (utf8-decode octets)))
       ((:file :executable)
        (fs-write-atomic fs pn octets)
        ;; Local atomic writes keep an existing file's mode: set it both ways.

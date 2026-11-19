@@ -22,7 +22,8 @@
     (fs-mkdir fs home :parents t :exist-ok t)
     fs))
 
-(defun %mem-key (fs pathname)
+(defun %mem-lexical-key (fs pathname)
+  "Absolute posix key of PATHNAME as spelled (no symlink resolution)."
   (let* ((pn (if (pathnamep pathname) pathname (fs-parse fs pathname)))
          (abs (if (uiop:absolute-pathname-p pn)
                   pn
@@ -40,14 +41,43 @@
       key
       key))
 
+(defvar *mem-link-depth* 0)
+
+(defun %mem-symlink-loop (fs key)
+  (error 'path-error :filesystem fs :path key :message "too many levels of symbolic links"))
+
 (defun %mem-follow-symlink (fs key &optional visited)
+  "KEY (parents already resolved) with symlinks at the leaf followed."
   (let ((ent (gethash key (memory-fs-root fs))))
     (if (and (consp ent) (eq (car ent) :symlink))
-        (let ((target (second ent)))
-          (when (member target visited :test #'string=)
-            (error 'path-error :filesystem fs :path key :message "symlink loop"))
-          (%mem-follow-symlink fs target (cons key visited)))
+        (let ((*mem-link-depth* (1+ *mem-link-depth*)))
+          (when (or (member key visited :test #'string=) (> *mem-link-depth* 40))
+            (%mem-symlink-loop fs key))
+          (%mem-follow-symlink fs (%mem-parent-resolved-key fs (second ent)) (cons key visited)))
         key)))
+
+(defun %mem-parent-resolved-key (fs key)
+  "KEY with every symlink among its parent directories resolved (the leaf is
+kept, as lstat(2) does)."
+  (let ((slash (position #\/ key :from-end t)))
+    (if (or (null slash) (string= key "/"))
+        key
+        (let ((parent (if (zerop slash) "/" (subseq key 0 slash)))
+              (name (subseq key (1+ slash))))
+          (if (string= parent "/")
+              key
+              (let ((real (%mem-follow-symlink fs (%mem-parent-resolved-key fs parent))))
+                (if (string= real "/")
+                    (concatenate 'string "/" name)
+                    (concatenate 'string real "/" name))))))))
+
+(defun %mem-key (fs pathname)
+  "Table key of the entry PATHNAME names: parents resolved, leaf as is."
+  (%mem-parent-resolved-key fs (%mem-lexical-key fs pathname)))
+
+(defun %mem-real-key (fs pathname)
+  "Table key of what PATHNAME finally refers to (every symlink resolved)."
+  (%mem-follow-symlink fs (%mem-key fs pathname)))
 
 (defmethod fs-parse ((fs memory-filesystem) designator &key directory)
   (let ((pn (etypecase designator
@@ -152,61 +182,41 @@
     (third ent)))
 
 (defmethod fs-iterdir ((fs memory-filesystem) pathname)
+  "Entries of the directory PATHNAME (a symlink to a directory is followed),
+named under PATHNAME as given."
   (let* ((abs (fs-absolute fs pathname :defaults (memory-fs-cwd fs)))
-         (prefix (%mem-key fs abs))
-         (prefix (if (string= prefix "/") "/" (concatenate 'string prefix "/")))
+         (real (%mem-real-key fs abs))
+         (prefix (if (string= real "/") "/" (concatenate 'string real "/")))
+         (spelled (%mem-lexical-key fs abs))
+         (spelled (if (string= spelled "/") "/" (concatenate 'string spelled "/")))
          (out '()))
-    (unless (fs-directory-p fs abs)
+    (unless (eq (gethash real (memory-fs-root fs)) :dir)
       (error 'path-not-found :filesystem fs :path abs))
     (maphash (lambda (k v)
                (declare (ignore v))
                (when (and (uiop:string-prefix-p prefix k)
-                          (not (string= k (%mem-key fs abs)))
+                          (not (string= k real))
                           (not (find #\/ k :start (length prefix))))
-                 (push (fs-parse fs k) out)))
+                 (push (fs-parse fs (concatenate 'string spelled (subseq k (length prefix))))
+                       out)))
              (memory-fs-root fs))
     (nreverse out)))
 
-(defmethod fs-glob ((fs memory-filesystem) pathname pattern &key recursive ignore)
-  (let* ((base-key (%mem-key fs (fs-absolute fs pathname)))
-         (prefix (if (string= base-key "/")
-                     "/"
-                     (concatenate 'string base-key "/")))
-         (matcher (%resolve-ignore fs pathname ignore))
-         (out '()))
-    (maphash
-     (lambda (k v)
-       (when (uiop:string-prefix-p prefix k)
-         (let* ((rel (subseq k (length prefix)))
-                (nm (file-namestring k))
-                (nested-p (find #\/ rel)))
-           (when (and (plusp (length rel))
-                      (not (and matcher (ignore-path-p matcher rel :directory (eq v :dir))))
-                      (or recursive (find #\/ pattern) (not nested-p))
-                      (if (find #\/ pattern)
-                          (pathname-match-p rel (%wild-pattern pattern))
-                          (and nm (%name-matches-p nm pattern))))
-             (push (fs-parse fs k) out)))))
-     (memory-fs-root fs))
-    (nreverse out)))
-
 (defmethod fs-walk ((fs memory-filesystem) pathname &key (top-down t) follow-symlinks ignore)
-  (declare (ignore follow-symlinks))
-  (let* ((out '())
-         (root (fs-absolute fs pathname))
-         (ignored-p (%ignore-predicate fs root ignore)))
-    (labels ((walk* (dir)
-               (let* ((entries (fs-iterdir fs dir))
-                      (files (remove-if-not (lambda (p) (fs-file-p fs p)) entries))
-                      (dirs (remove-if-not (lambda (p) (fs-directory-p fs p)) entries)))
-                 (when ignored-p
-                   (setf files (remove-if (lambda (f) (funcall ignored-p f nil)) files)
-                         dirs (remove-if (lambda (d) (funcall ignored-p d t)) dirs)))
-                 (when top-down (push (list dir files dirs) out))
-                 (dolist (d dirs) (walk* d))
-                 (unless top-down (push (list dir files dirs) out)))))
-      (walk* root)
-      (nreverse out))))
+  (let ((root (fs-absolute fs pathname)))
+    (%walk-tree fs root
+                (lambda (dir)
+                  ;; A link is listed under DIRS when it leads to a directory,
+                  ;; otherwise (file or dangling link) under FILES, as on local.
+                  (let ((files '()) (dirs '()))
+                    (dolist (e (fs-iterdir fs dir))
+                      (if (eq :dir (gethash (ignore-errors (%mem-real-key fs e))
+                                            (memory-fs-root fs)))
+                          (push e dirs)
+                          (push e files)))
+                    (values (nreverse files) (nreverse dirs))))
+                :top-down top-down :follow-symlinks follow-symlinks
+                :ignored-p (%ignore-predicate fs root ignore))))
 
 (defmethod fs-mkdir ((fs memory-filesystem) pathname &key (parents t) (exist-ok t))
   (let* ((abs (uiop:ensure-directory-pathname (fs-absolute fs pathname)))
@@ -369,7 +379,7 @@
 (defmethod fs-create-symlink ((fs memory-filesystem) link target)
   (let ((key (%mem-key fs (fs-absolute fs link))))
     (setf (gethash key (memory-fs-root fs))
-          (list :symlink (%mem-key fs (fs-absolute fs target))))
+          (list :symlink (%mem-lexical-key fs (fs-absolute fs target))))
     (fs-parse fs key)))
 
 (defmethod fs-read-symlink ((fs memory-filesystem) pathname)
@@ -407,16 +417,18 @@
 
 (defmethod fs-make-temp ((fs memory-filesystem) &key (directory "/tmp") (prefix "tmp-") (suffix ""))
   (fs-mkdir fs directory :parents t :exist-ok t)
-  (fs-parse fs (format nil "~A/~A~A~A"
-                       (string-right-trim "/" (%mem-key fs (fs-absolute fs directory)))
-                       prefix (get-universal-time) suffix)))
+  (let ((dir (string-right-trim "/" (%mem-lexical-key fs (fs-absolute fs directory)))))
+    (loop
+      (let ((pn (fs-parse fs (format nil "~A/~A~A~A" dir prefix (%temp-name-token) suffix))))
+        (unless (or (fs-exists-p fs pn) (fs-symlink-p fs pn))
+          (return pn))))))
 
 (defmethod fs-same-p ((fs memory-filesystem) a b)
   (string= (%mem-key fs (fs-absolute fs a))
            (%mem-key fs (fs-absolute fs b))))
 
 (defmethod fs-as-uri ((fs memory-filesystem) pathname)
-  (format nil "memory://~A" (%mem-key fs (fs-absolute fs pathname))))
+  (format nil "memory://~A" (%mem-lexical-key fs (fs-absolute fs pathname))))
 
 ;;; --- H2a: atomic writes and streams ----------------------------------------
 

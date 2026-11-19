@@ -183,12 +183,9 @@ Stops when PARENT is a fixed point (root), so broken backends cannot loop."
          (equal (%tail a (length b)) b))))
 
 (defun match-p (designator pattern)
-  "Pathlib-like match: PATTERN against the full path or the final name."
-  (let ((nm (name designator))
-        (pn (%pn designator))
-        (wild (%wild-pattern pattern)))
-    (or (and nm (%name-matches-p nm pattern))
-        (pathname-match-p pn wild))))
+  "Pathlib PurePath.match: the glob PATTERN (see GLOB) against the trailing
+segments of the path, or the whole path when PATTERN is absolute."
+  (%path-match-p (%pathname-as-posix (%pn designator)) pattern))
 
 (defun absolute (designator &key (defaults nil defaults-p))
   (let ((p (ensure-path designator)))
@@ -300,7 +297,11 @@ Stops when PARENT is a fixed point (root), so broken backends cannot loop."
             (fs-iterdir (path-filesystem p) (path-pathname p)))))
 
 (defun glob (designator pattern &key recursive ignore)
-  "IGNORE: NIL, an IGNORE-MATCHER or :AUTO (see FS-GLOB)."
+  "Entries under DESIGNATOR matching the glob PATTERN: fnmatch syntax per
+\"/\"-separated segment (\"*\", \"?\", \"[a-z]\", \"[!x]\", \"\\\" escapes; none
+matches \"/\") and \"**\" for any number of directories. RECURSIVE (RGLOB)
+matches PATTERN at any depth. Directory symlinks are listed, not descended.
+IGNORE: NIL, an IGNORE-MATCHER or :AUTO (see FS-GLOB)."
   (let ((p (ensure-path designator)))
     (mapcar (lambda (pn) (%wrap (path-filesystem p) pn))
             (fs-glob (path-filesystem p) (path-pathname p) pattern
@@ -483,69 +484,20 @@ combined with them."
             (values (%wrap fs pn) hash written-p))
           (%wrap fs (fs-write-bytes fs (path-pathname p) bytes :append append))))))
 
-(defun read-text (designator &key (encoding :utf-8))
+(defun read-text (designator &key (encoding :utf-8) (errors :strict))
+  "Text of DESIGNATOR. ERRORS :STRICT (the default) signals
+UTF8-DECODING-ERROR on ill-formed input, with the restarts USE-VALUE and
+CONTINUE (see UTF8-DECODE-STRICT); :REPLACE decodes each ill-formed sequence
+as U+FFFD."
+  (check-type errors (member :strict :replace))
   (ecase encoding
-    (:utf-8 (utf8-octets-to-string (read-bytes designator)))
-    (otherwise (error "unsupported text encoding ~S" encoding))))
+    (:utf-8 (let ((octets (read-bytes designator)))
+              (if (eq errors :strict)
+                  (utf8-decode-strict octets)
+                  (utf8-decode octets))))))
 
 (defun write-text (designator text &key (encoding :utf-8) append atomic expected-hash)
   (ecase encoding
-    (:utf-8 (write-bytes designator (utf8-string-to-octets text)
+    (:utf-8 (write-bytes designator (utf8-encode text)
                          :append append :atomic atomic :expected-hash expected-hash))
     (otherwise (error "unsupported text encoding ~S" encoding))))
-(defun utf8-octets-to-string (bytes)
-  (let ((len (length bytes))
-        (out (make-array 0 :element-type 'character :adjustable t :fill-pointer 0))
-        (i 0))
-    (flet ((need (n)
-             (unless (<= (+ i n) len)
-               (error "invalid UTF-8: truncated sequence at byte ~D" i))))
-      (loop while (< i len)
-            do (let ((b0 (aref bytes i)))
-                 (cond ((< b0 #x80)
-                        (vector-push-extend (code-char b0) out)
-                        (incf i))
-                       ((< b0 #xE0)
-                        (need 2)
-                        (vector-push-extend
-                         (code-char (logior (ash (logand b0 #x1F) 6)
-                                            (logand (aref bytes (+ i 1)) #x3F)))
-                         out)
-                        (incf i 2))
-                       ((< b0 #xF0)
-                        (need 3)
-                        (vector-push-extend
-                         (code-char (logior (ash (logand b0 #x0F) 12)
-                                            (ash (logand (aref bytes (+ i 1)) #x3F) 6)
-                                            (logand (aref bytes (+ i 2)) #x3F)))
-                         out)
-                        (incf i 3))
-                       (t
-                        (need 4)
-                        (vector-push-extend
-                         (code-char (logior (ash (logand b0 #x07) 18)
-                                            (ash (logand (aref bytes (+ i 1)) #x3F) 12)
-                                            (ash (logand (aref bytes (+ i 2)) #x3F) 6)
-                                            (logand (aref bytes (+ i 3)) #x3F)))
-                         out)
-                        (incf i 4))))))
-    out))
-(defun utf8-string-to-octets (text)
-  (let ((out (make-array 0 :element-type '(unsigned-byte 8) :adjustable t :fill-pointer 0)))
-    (flet ((push-byte (b) (vector-push-extend b out)))
-      (dotimes (i (length text))
-        (let ((c (char-code (char text i))))
-          (cond ((< c #x80) (push-byte c))
-                ((< c #x800)
-                 (push-byte (logior #xC0 (ash c -6)))
-                 (push-byte (logior #x80 (logand c #x3F))))
-                ((< c #x10000)
-                 (push-byte (logior #xE0 (ash c -12)))
-                 (push-byte (logior #x80 (logand (ash c -6) #x3F)))
-                 (push-byte (logior #x80 (logand c #x3F))))
-                (t
-                 (push-byte (logior #xF0 (ash c -18)))
-                 (push-byte (logior #x80 (logand (ash c -12) #x3F)))
-                 (push-byte (logior #x80 (logand (ash c -6) #x3F)))
-                 (push-byte (logior #x80 (logand c #x3F))))))))
-    out))

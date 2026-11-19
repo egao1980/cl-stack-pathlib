@@ -190,22 +190,6 @@ Windows drive is RFC 8089 path-absolute: `/C:/Users/foo` (not unix-namestring)."
   (let ((pn (%posix-string-to-pathname string :directory directory)))
     (if directory (uiop:ensure-directory-pathname pn) pn)))
 
-(defun %wild-pattern (pattern)
-  "Convert a glob PATTERN (e.g. \"*.txt\") to a pathname for pathname-match-p."
-  (cond ((string= pattern "*") (make-pathname :name :wild :type :wild))
-        ((and (>= (length pattern) 2)
-              (char= (char pattern 0) #\*)
-              (char= (char pattern 1) #\.))
-         (make-pathname :name :wild :type (subseq pattern 2)))
-        ((find #\* pattern)
-         (uiop:parse-unix-namestring pattern :wilden t))
-        (t (uiop:parse-unix-namestring pattern))))
-
-(defun %name-matches-p (name pattern)
-  (or (string= name pattern)
-      (pathname-match-p name (%wild-pattern pattern))
-      (pathname-match-p (pathname name) (%wild-pattern pattern))))
-
 (defun %collapse-dot-segments (pathname)
   "Pure collapse of `.` / `..`. Relative leading `..` is kept (pathlib / Boost)."
   (let* ((str (%pathname-as-posix (uiop:ensure-pathname pathname :want-pathname t)))
@@ -223,3 +207,11 @@ Windows drive is RFC 8089 path-absolute: `/C:/Users/foo` (not unix-namestring)."
             (t (push p stack))))
     (setf stack (nreverse stack))
     (values abs? stack (uiop:directory-pathname-p pathname))))
+
+(defvar *temp-name-counter* 0)
+
+(defun %temp-name-token ()
+  "A fresh name fragment for temp paths: time, a per-image counter and a
+random part, so names made within one second (or by two images) differ."
+  (format nil "~D-~D-~36R" (get-universal-time) (incf *temp-name-counter*)
+          (random (expt 36 6))))

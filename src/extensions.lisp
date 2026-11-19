@@ -70,36 +70,6 @@ final LF does not start an extra empty line."
          :octets)
         (t (%unsupported fs (format nil "FS-OPEN :ELEMENT-TYPE ~S" element-type) pathname))))
 
-(defun %utf8-decode-strict (bytes)
-  "String from the octets BYTES, or NIL when they are not well-formed UTF-8
-(RFC 3629: no overlongs, surrogates, code points past U+10FFFF, stray or
-missing continuation octets)."
-  (let* ((n (length bytes))
-         (out (make-string n))
-         (i 0)
-         (j 0))
-    (loop
-      (when (>= i n) (return (subseq out 0 j)))
-      (let ((b0 (aref bytes i)) len cp min)
-        (cond ((< b0 #x80) (setf len 1 cp b0 min 0))
-              ((<= #xC2 b0 #xDF) (setf len 2 cp (logand b0 #x1F) min #x80))
-              ((<= #xE0 b0 #xEF) (setf len 3 cp (logand b0 #x0F) min #x800))
-              ((<= #xF0 b0 #xF4) (setf len 4 cp (logand b0 #x07) min #x10000))
-              (t (return nil)))
-        (when (> (+ i len) n) (return nil))
-        (loop for k from 1 below len
-              for b = (aref bytes (+ i k))
-              do (if (= (logand b #xC0) #x80)
-                     (setf cp (logior (ash cp 6) (logand b #x3F)))
-                     (return-from %utf8-decode-strict nil)))
-        (when (or (< cp min) (<= #xD800 cp #xDFFF) (> cp #x10FFFF))
-          (return nil))
-        (let ((ch (code-char cp)))
-          (unless ch (return nil))
-          (setf (char out j) ch))
-        (incf i len)
-        (incf j)))))
-
 ;;; Octet input stream over a vector, on the implementation's own Gray
 ;;; streams (FS-OPEN for memory, zip and any backend without a native stream).
 
@@ -145,7 +115,7 @@ missing continuation octets)."
 (defun %octets-input-stream (fs pathname octets kind)
   "Input stream of KIND (:OCTETS or :CHARACTERS, UTF-8) over OCTETS."
   (ecase kind
-    (:characters (make-string-input-stream (utf8-octets-to-string octets)))
+    (:characters (make-string-input-stream (utf8-decode octets)))
     (:octets (%make-octet-input-stream fs pathname octets))))
 
 ;;; --- portable defaults -----------------------------------------------------
@@ -161,7 +131,7 @@ missing continuation octets)."
 (defmethod fs-read-lines ((fs filesystem) pathname &key (start 1) end)
   (check-type start (integer 1))
   (check-type end (or null (integer 0)))
-  (%select-lines (%split-lines (utf8-octets-to-string (fs-read-bytes fs pathname)))
+  (%select-lines (%split-lines (utf8-decode (fs-read-bytes fs pathname)))
                  start end))
 
 (defmethod fs-open ((fs filesystem) pathname &key (direction :input) (element-type '(unsigned-byte 8)))
@@ -209,7 +179,7 @@ missing continuation octets)."
   "Decoded text of BYTES, or NIL for binary (NUL in the first 8000 octets)
 or invalid UTF-8 content."
   (unless (find 0 bytes :end (min 8000 (length bytes)))
-    (%utf8-decode-strict bytes)))
+    (%utf8-decode-or-nil bytes)))
 
 (defmethod fs-grep ((fs filesystem) root pattern
                     &key (ignore :auto) include regex case-insensitive max-results)
@@ -221,8 +191,11 @@ or invalid UTF-8 content."
          (include (when include
                     (parse-ignore (if (listp include) include (list include)))))
          (files (if directory-p
+                    ;; Links are skipped, as ripgrep does by default: a link
+                    ;; may lead outside ROOT.
                     (let ((all (loop for (nil files nil) in (fs-walk fs root :ignore ignore)
-                                     append files)))
+                                     append (remove-if (lambda (f) (fs-symlink-p fs f))
+                                                       files))))
                       (if include
                           (let ((prefix (%posix-prefix fs root)))
                             (remove-if-not (lambda (f)
