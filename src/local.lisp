@@ -7,30 +7,47 @@
 (defun make-local-filesystem ()
   (make-instance 'local-filesystem))
 
-;;; ECL has no lstat/readlink/symlink bindings in EXT/SI.
+;;; ECL has no lstat/readlink/symlink bindings in EXT/SI. A :CSTRING argument
+;;; only passes base characters, so names go through %ECL-C (UTF-8 octets as a
+;;; base-string, the bytes OPEN uses for the same name) and readlink's result
+;;; comes back through %ECL-LISP.
 #+(and ecl unix)
 (progn
   (ffi:clines "#include <unistd.h>" "#include <limits.h>"
               "#include <stdio.h>" "#include <sys/types.h>" "#include <sys/stat.h>")
+  (defun %ecl-c (string)
+    "STRING as a base-string holding its UTF-8 octets, one per character."
+    (map 'base-string #'code-char (ext:string-to-octets string :external-format :utf-8)))
+  (defun %ecl-lisp (base-string)
+    "Inverse of %ECL-C."
+    (ext:octets-to-string (map '(vector (unsigned-byte 8)) #'char-code base-string)
+                          :external-format :utf-8))
   (defun %ecl-rename (from to)
-    (ffi:c-inline (from to) (:cstring :cstring) :bool "rename(#0, #1) == 0" :one-liner t))
+    (let ((from (%ecl-c from)) (to (%ecl-c to)))
+      (ffi:c-inline (from to) (:cstring :cstring) :bool "rename(#0, #1) == 0" :one-liner t)))
   (defun %ecl-chmod (namestring mode)
-    (ffi:c-inline (namestring mode) (:cstring :int) :bool
-                  "chmod(#0, (mode_t)#1) == 0" :one-liner t))
+    (let ((namestring (%ecl-c namestring)))
+      (ffi:c-inline (namestring mode) (:cstring :int) :bool
+                    "chmod(#0, (mode_t)#1) == 0" :one-liner t)))
   (defun %ecl-stat-mode (namestring follow)
     "st_mode of NAMESTRING (stat, or lstat when FOLLOW is NIL), or -1."
-    (ffi:c-inline (namestring follow) (:cstring :bool) :int
-      "{ struct stat st; int r = (#1) ? stat(#0, &st) : lstat(#0, &st);
-         @(return) = (r == 0) ? (int)st.st_mode : -1; }"))
+    (let ((namestring (%ecl-c namestring)))
+      (ffi:c-inline (namestring follow) (:cstring :bool) :int
+        "{ struct stat st; int r = (#1) ? stat(#0, &st) : lstat(#0, &st);
+           @(return) = (r == 0) ? (int)st.st_mode : -1; }")))
   (defun %ecl-access-x-p (namestring)
-    (ffi:c-inline (namestring) (:cstring) :bool "access(#0, X_OK) == 0" :one-liner t))
+    (let ((namestring (%ecl-c namestring)))
+      (ffi:c-inline (namestring) (:cstring) :bool "access(#0, X_OK) == 0" :one-liner t)))
   (defun %ecl-symlink (target link)
-    (ffi:c-inline (target link) (:cstring :cstring) :bool "symlink(#0, #1) == 0" :one-liner t))
+    (let ((target (%ecl-c target)) (link (%ecl-c link)))
+      (ffi:c-inline (target link) (:cstring :cstring) :bool "symlink(#0, #1) == 0" :one-liner t)))
   (defun %ecl-readlink (namestring)
-    (ffi:c-inline (namestring) (:cstring) :object
-      "{ char buf[PATH_MAX]; ssize_t n = readlink(#0, buf, sizeof(buf) - 1);
-         if (n < 0) @(return) = ECL_NIL;
-         else { buf[n] = 0; @(return) = ecl_make_simple_base_string(buf, n); } }")))
+    (let* ((namestring (%ecl-c namestring))
+           (raw (ffi:c-inline (namestring) (:cstring) :object
+                  "{ char buf[PATH_MAX]; ssize_t n = readlink(#0, buf, sizeof(buf) - 1);
+                     if (n < 0) @(return) = ECL_NIL;
+                     else { buf[n] = 0; @(return) = ecl_make_simple_base_string(buf, n); } }")))
+      (and raw (%ecl-lisp raw)))))
 
 (defmethod fs-parse ((fs local-filesystem) designator &key directory)
   (let ((pn (etypecase designator
@@ -163,11 +180,38 @@ UIOP TRUENAMIZE alone is not enough — it succeeds for missing leaves."
 (defmethod fs-last-modified ((fs local-filesystem) pathname)
   (file-write-date (fs-parse fs pathname)))
 
+(defun %local-files (dir)
+  "Non-directory entries of the directory DIR, as DIR/name. A symlink is
+listed under its own name, never as its target: ECL's UIOP:DIRECTORY-FILES
+resolves links (a link to real.txt shows up as a second real.txt), so ECL
+asks DIRECTORY not to, and rebuilds each entry on DIR (ECL's DIRECTORY
+returns DIR's truename, /private/var/... for /var/... on macOS)."
+  #+ecl
+  (loop for e in (directory (merge-pathnames uiop:*wild-file-for-directory* dir)
+                            :resolve-symlinks nil)
+        unless (uiop:directory-pathname-p e)
+          collect (make-pathname :name (pathname-name e) :type (pathname-type e)
+                                 :version nil :defaults dir))
+  #-ecl
+  (uiop:directory-files dir))
+
+(defun %local-subdirectories (dir)
+  "Subdirectories of the directory DIR, as DIR/name/ (see %LOCAL-FILES)."
+  #+ecl
+  (loop for e in (directory (merge-pathnames (make-pathname :directory '(:relative :wild)) dir)
+                            :resolve-symlinks nil)
+        collect (merge-pathnames
+                 (make-pathname :directory (list :relative (car (last (pathname-directory e))))
+                                :name nil :type nil :version nil)
+                 dir))
+  #-ecl
+  (uiop:subdirectories dir))
+
 (defmethod fs-iterdir ((fs local-filesystem) pathname)
   (let ((dir (uiop:ensure-directory-pathname (fs-parse fs pathname))))
     (unless (uiop:directory-exists-p dir)
       (error 'path-not-found :filesystem fs :path dir))
-    (append (uiop:directory-files dir) (uiop:subdirectories dir))))
+    (append (%local-files dir) (%local-subdirectories dir))))
 
 (defmethod fs-glob ((fs local-filesystem) pathname pattern &key recursive ignore)
   (let* ((base (uiop:ensure-directory-pathname (fs-absolute fs pathname)))
@@ -192,8 +236,8 @@ UIOP TRUENAMIZE alone is not enough — it succeeds for missing leaves."
          (ignored-p (%ignore-predicate fs root ignore)))
     (labels ((walk* (dir)
                (let* ((dir (uiop:ensure-directory-pathname dir))
-                      (files (ignore-errors (uiop:directory-files dir)))
-                      (subs (ignore-errors (uiop:subdirectories dir))))
+                      (files (ignore-errors (%local-files dir)))
+                      (subs (ignore-errors (%local-subdirectories dir))))
                  (when ignored-p
                    (setf files (remove-if (lambda (f) (funcall ignored-p f nil)) files)
                          subs (remove-if (lambda (d) (funcall ignored-p d t)) subs)))
@@ -419,7 +463,8 @@ and MTIME may be NIL (then the caller asks the portable way)."
   #-(and (or sbcl ecl) unix) (progn pathname mode nil))
 
 (defun %local-rename (fs from to)
-  "rename(2) FROM over TO (atomic replace on POSIX); never CL:RENAME-FILE,
+  "Rename FROM over TO, replacing TO: rename(2) on POSIX, MoveFileExW with
+MOVEFILE_REPLACE_EXISTING on Windows SBCL. Never CL:RENAME-FILE there,
 which merges pathname defaults into TO."
   #+(and sbcl unix)
   (handler-case (sb-posix:rename (%native from) (%native to))
@@ -429,8 +474,21 @@ which merges pathname defaults into TO."
   #+(and ecl unix)
   (unless (%ecl-rename (%native from) (%native to))
     (error 'path-error :filesystem fs :path to :message "rename(2) failed"))
-  #-(and (or sbcl ecl) unix)
-  (progn fs (uiop:rename-file-overwriting-target from to)))
+  ;; Windows SBCL: SB-UNIX:UNIX-RENAME is MoveFileExW with
+  ;; MOVEFILE_REPLACE_EXISTING (a same-volume replace, which is what an
+  ;; atomic write needs) on the native names.
+  #+(and sbcl (or win32 windows))
+  (multiple-value-bind (ok err)
+      (sb-unix:unix-rename (coerce (%native from) 'simple-string)
+                           (coerce (%native to) 'simple-string))
+    (unless ok
+      (error 'path-error :filesystem fs :path to
+                         :message (format nil "MoveFileEx failed: ~A" (sb-int:strerror err)))))
+  #-(or (and (or sbcl ecl) unix) (and sbcl (or win32 windows)))
+  ;; CL:RENAME-FILE merges FROM into a typeless TO (".gitignore" would become
+  ;; ".gitignore.tmp"); an :UNSPECIFIC type stops that.
+  (progn fs (uiop:rename-file-overwriting-target
+             from (if (pathname-type to) to (make-pathname :type :unspecific :defaults to)))))
 
 (defmethod fs-read-range ((fs local-filesystem) pathname start end)
   (%check-range start end)

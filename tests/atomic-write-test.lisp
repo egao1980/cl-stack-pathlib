@@ -27,6 +27,25 @@
       (ok (string= (read-text p) "three"))
       (ok (equal (list-names root) '("f.txt"))))))
 
+(deftest-parametrize atomic-write-any-name-create-and-replace
+    ((kind) :ids ("local" "memory") (:local) (:memory))
+  ;; Names without a type (dotfiles, store blobs), with several dots, and
+  ;; non-ASCII: the temp file's name must never leak into the target's
+  ;; (CL:RENAME-FILE merges the temp's type into a typeless target), and the
+  ;; rename must see the same bytes as OPEN. Replacing must work on every OS.
+  (with-backend (root kind)
+    (let ((names (list ".gitignore" "Makefile" "24cf3d897fd680e0258c1c" "a.b.c"
+                       (format nil "~C.txt" (code-char #xE9))
+                       (format nil "d~C" (code-char #x4E2D)))))
+      (dolist (n names)
+        (let ((p (join root n)))
+          (write-text p "one" :atomic t)
+          (ok (string= "one" (read-text p)) (format nil "created ~S" n))
+          (write-text p "two" :atomic t)
+          (ok (string= "two" (read-text p)) (format nil "replaced ~S" n))))
+      (ok (equal (sort (copy-list names) #'string<) (list-names root))
+          "exactly the targets, no temp files"))))
+
 (deftest-parametrize atomic-write-creates-parents
     ((kind) :ids ("local" "memory") (:local) (:memory))
   (with-backend (root kind)
