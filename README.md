@@ -79,6 +79,34 @@ Pure Lisp, no extra dependencies. Portable defaults on `filesystem` (memory and 
 
 `grep` takes a literal string or a function `line → start | NIL`; `:regex t` goes through the hook `fs-grep-matcher`, which refuses by default (pathlib has no regex engine). Zip is read-only: `fs-write-atomic` signals `unsupported-operation`.
 
+## Snapshots and areas (0.5.0, R4a)
+
+Pure Lisp, portable over the base protocol (local and memory backends).
+
+A **snapshot** is a content-addressed manifest of a tree's regular files and symlinks (directories are not entries; symlinks are not followed). The manifest has a fixed text form: a `cl-stack-pathlib tree v1` header, then one `<mode> <hash> <n> <path>` line per entry, sorted by path. The modes are `100644`, `100755` and `120000`. The snapshot id is the `octets-hash` of that manifest, so the same tree gets the same id on every run, machine and backend. Only the owner execute bit counts toward the mode.
+
+```lisp
+(let* ((store (make-directory-snapshot-store "/var/snapshots"))  ; or a memory store
+       (id (snapshot "proj/" :ignore :auto :store store)))
+  (write-text "proj/README.md" "oops")
+  (snapshot-changes id (snapshot "proj/" :ignore :auto :store store) :store store)
+  (restore-snapshot "proj/" id :store store :ignore :auto))    ; → FS-CHANGE list applied
+```
+
+`restore-snapshot` checks that the manifest and every blob are in the store before it touches anything. A missing one signals `snapshot-not-found`. Ignored paths are never written or deleted, and directories the restore empties are removed. The directory store keeps each blob in `blobs/sha256/<2 hex>/<62 hex>` and writes it atomically.
+
+An **area** is a writable copy of a base directory. Agents can edit it with anything (pathlib, `cl:open`, a shell), and each rescan finds the edits. It uses the racy-git rule: a file whose size or mtime changed, or whose recorded mtime falls within 2 s of the open time, is hashed.
+
+```lisp
+(with-area (a "proj/" :ignore :auto)          ; :mechanism :copy (the only portable one)
+  (write-text (join (area-root a) "x.lisp") "(new)")
+  (area-changes a)                            ; → ((:added "x.lisp" …))
+  (handler-bind ((area-conflict #'invoke-skip-path))   ; or OVERWRITE / ABORT-COMMIT
+    (close-area a :action :commit)))          ; → (values changes :committed)
+```
+
+`close-area` takes `:discard` (the default), `:keep` or `:commit`. A commit checks every changed path first. A path that changed both in the base and in the area, to different results, signals `area-conflict` with the restarts `overwrite`, `skip-path` and `abort-commit`. Nothing is written until every conflict is resolved, and the base paths the area did not change are never touched. Other mechanisms (`:clone`, `:overlay`, …) signal `unsupported-operation`; fs-backend repos specialize the same generics.
+
 ## Amalgamates
 
 | Source | Ideas |
