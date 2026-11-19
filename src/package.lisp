@@ -181,6 +181,14 @@
    #:write-text
    #:read-bytes
    #:write-bytes
+   ;; UTF-8 codec (0.6.0)
+   #:utf8-encode
+   #:utf8-length
+   #:utf8-decode
+   #:utf8-decode-strict
+   #:utf8-decoding-error
+   #:utf8-decoding-error-octets
+   #:utf8-decoding-error-position
    ;; H2a facade
    #:read-range
    #:read-lines

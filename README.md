@@ -107,6 +107,31 @@ An **area** is a writable copy of a base directory. Agents can edit it with anyt
 
 `close-area` takes `:discard` (the default), `:keep` or `:commit`. A commit checks every changed path first. A path that changed both in the base and in the area, to different results, signals `area-conflict` with the restarts `overwrite`, `skip-path` and `abort-commit`. Nothing is written until every conflict is resolved, and the base paths the area did not change are never touched. Other mechanisms (`:clone`, `:overlay`, …) signal `unsupported-operation`; fs-backend repos specialize the same generics.
 
+## UTF-8, globs and symlinks (0.6.0)
+
+A pure-Lisp UTF-8 codec (RFC 3629) that behaves the same on every backend and implementation:
+
+```lisp
+(utf8-encode "héllo")                 ; → (simple-array (unsigned-byte 8) (*))
+(utf8-length "héllo")                 ; → 6 octets
+(utf8-decode #(#x61 #xC3 #x0A))       ; lenient: "a�\n" (one U+FFFD per maximal bad subpart)
+(utf8-decode-strict octets :start 0 :end n)   ; signals UTF8-DECODING-ERROR
+(handler-bind ((utf8-decoding-error #'continue))   ; or (use-value "…")
+  (read-text "maybe-latin1.txt"))
+(read-text "x.txt" :errors :replace)  ; never signals
+```
+
+`utf8-decode-strict` rejects overlongs, surrogates, code points past U+10FFFF, stray or missing continuation octets and truncated sequences. It signals `utf8-decoding-error` (readers `utf8-decoding-error-octets` and `utf8-decoding-error-position`) with the restarts `use-value` and `continue`. `read-text` is strict by default now. `read-lines` and character streams from `open-path` decode leniently.
+
+Glob patterns use fnmatch rules on each `/`-separated segment: `*`, `?`, `[a-z]`, `[!x]` and backslash escapes, none of which matches `/`. A `**` segment matches any number of directories. The same matcher runs on every backend, and names are compared as strings, so `[` in a file name is an ordinary character. `rglob` matches the pattern at any depth, and `match-p` follows `PurePath.match`.
+
+```lisp
+(glob "src/" "*.l*")         (glob "." "file?.txt")      (glob "." "[km]*")
+(glob "." "**/*.lisp")       (rglob "." "m*.lisp")       (match-p "a/b/c.lisp" "b/*.lisp")
+```
+
+Symlinks behave as in `os.walk` / pathlib on every backend. `walk` lists a link to a file (or a dangling link) in FILES and a link to a directory in DIRS. It walks a directory link only with `:follow-symlinks t`, and never one that leads back to a directory being walked. `glob` and `rglob` list links but never descend directory links, and their results stay under the base as spelled. `grep` skips links, as ripgrep does by default. `load-ignore-files` (`:ignore :auto`) never follows a link. `symlink-p` is true for a directory-form pathname of a link (`out/`). Memory filesystems resolve symlinks in parent directories, so `/link-to-dir/file` works there as it does on local. Temp names made by `fs-make-temp` no longer collide within one second.
+
 ## Amalgamates
 
 | Source | Ideas |

@@ -76,12 +76,19 @@
 
 (defgeneric fs-iterdir (fs pathname))
 (defgeneric fs-glob (fs pathname pattern &key recursive ignore)
-  (:documentation "Paths under PATHNAME matching PATTERN. IGNORE is NIL, an
+  (:documentation "Paths under PATHNAME matching the glob PATTERN: fnmatch
+syntax on each \"/\"-separated segment (\"*\", \"?\", \"[a-z]\", \"[!x]\",
+backslash escapes), \"**\" for any number of directories; RECURSIVE matches
+PATTERN at any depth. Results are files and directories under PATHNAME as
+spelled; directory symlinks are listed, never descended. IGNORE is NIL, an
 IGNORE-MATCHER (patterns relative to PATHNAME) or :AUTO (read .gitignore and
 .ignore files found under PATHNAME); ignored entries are dropped and ignored
 directories are not descended."))
 (defgeneric fs-walk (fs pathname &key top-down follow-symlinks ignore)
-  (:documentation "List of (dir files dirs) triples under PATHNAME. IGNORE as
+  (:documentation "List of (dir files dirs) triples under PATHNAME. A symlink
+is listed in DIRS when it leads to a directory, otherwise in FILES; a directory
+symlink is walked only when FOLLOW-SYMLINKS is true (default NIL), and never
+when it leads back to a directory being walked. IGNORE as
 for FS-GLOB: ignored files are left out of FILES, ignored directories are left
 out of DIRS and not walked."))
 
@@ -153,8 +160,8 @@ through FS-GREP-MATCHER) or a function of a line string returning the match
 start index or NIL. IGNORE: as FS-WALK, default :AUTO. INCLUDE: NIL, a string
 or a list of strings in .gitignore glob syntax relative to ROOT; a file is
 searched when the INCLUDE matcher ignores it (i.e. a pattern matches it).
-Files with a NUL octet in their first 8000 octets, or not valid UTF-8, are
-skipped. Returns (values matches truncated-p): GREP-MATCH objects sorted by
+Symlinks under ROOT are not searched (as ripgrep), nor are files with a NUL
+octet in their first 8000 octets or not valid UTF-8. Returns (values matches truncated-p): GREP-MATCH objects sorted by
 path namestring (STRING<) then line; at most MAX-RESULTS of them, TRUNCATED-P
 true when at least one more match existed."))
 

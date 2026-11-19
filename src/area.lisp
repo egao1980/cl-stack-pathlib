@@ -218,7 +218,7 @@ Symlinks are removed, never followed."
            (let ((o (%symlink-octets fs src))
                  (dst (fs-join fs root rel)))
              (fs-mkdir fs (fs-parent fs dst) :parents t :exist-ok t)
-             (fs-create-symlink fs dst (utf8-octets-to-string o))
+             (fs-create-symlink fs dst (utf8-decode o))
              (push (%make-area-record (make-snapshot-entry rel :symlink (octets-hash o)) nil nil)
                    records))))))
     (nreverse records)))

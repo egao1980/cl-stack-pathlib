@@ -298,18 +298,21 @@ IGNORE-PATH-STATUS."
   "Read every ignore file named in NAMES under ROOT on FS into one matcher with
 per-directory BASEs. Within one directory the files apply in NAMES order (so
 .ignore beats .gitignore, as in ripgrep); deeper directories beat shallower
-ones. Directories ignored by rules already read are not searched, and a
-directory named \".git\" is always skipped. This is what :IGNORE :AUTO uses."
+ones. Directories ignored by rules already read are not searched, symlinks to
+directories are never followed, and a directory named \".git\" is always
+skipped. This is what :IGNORE :AUTO uses."
   (let ((acc (make-instance 'ignore-matcher)))
     (labels ((visit (dir base)
                (dolist (name names)
                  (let ((file (fs-join fs dir name)))
                    (when (fs-file-p fs file)
                      (setf acc (merge-ignore acc (parse-ignore
-                                                  (utf8-octets-to-string (fs-read-bytes fs file))
+                                                  (utf8-decode (fs-read-bytes fs file))
                                                   :base base))))))
                (dolist (sub (fs-iterdir fs dir))
-                 (when (fs-directory-p fs sub)
+                 (when (and (fs-directory-p fs sub)
+                            ;; Never through a link: it may leave ROOT or loop.
+                            (not (fs-symlink-p fs sub)))
                    (let* ((name (%entry-name sub))
                           (rel (concatenate 'string base name)))
                      (unless (or (string= name ".git")
