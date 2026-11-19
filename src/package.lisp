@@ -203,6 +203,7 @@
    #:path-error-filesystem
    #:path-error-message
    #:path-not-found
+   #:symlink-loop
    #:missing-parent
    #:path-exists-error
    #:not-relative-error

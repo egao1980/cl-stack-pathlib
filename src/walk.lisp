@@ -47,6 +47,30 @@ the POSIX path string, an absolute one the whole path."
          (parts (%split-pattern posix)))
     (and segments (%match-segments segments parts))))
 
+;;; Kept for backends written against 0.5 that specialize FS-GLOB themselves
+;;; and call these internals (revision-backend-jj): 0.6.0 removed them with
+;;; the per-backend globs, so such a glob failed with UNDEFINED-FUNCTION.
+;;; New code: FS-GLOB's generic method, or %GLOB-NAME-MATCH-P / %PATH-MATCH-P.
+
+(defun %wild-pattern (pattern)
+  "Deprecated (0.5): PATTERN as a wild pathname for PATHNAME-MATCH-P."
+  (cond ((string= pattern "*") (make-pathname :name :wild :type :wild))
+        ((and (>= (length pattern) 2)
+              (char= (char pattern 0) #\*)
+              (char= (char pattern 1) #\.))
+         (make-pathname :name :wild :type (subseq pattern 2)))
+        ((find #\* pattern)
+         (uiop:parse-unix-namestring pattern :wilden t))
+        (t (uiop:parse-unix-namestring pattern))))
+
+(defun %name-matches-p (name pattern)
+  "Deprecated (0.5): does the file name NAME match the glob segment PATTERN?
+Now fnmatch, as FS-GLOB."
+  (and (stringp name) (stringp pattern)
+       (or (string= name pattern)
+           (and (not (find #\/ name))
+                (%glob-name-match-p name pattern)))))
+
 ;;; --- walking -------------------------------------------------------------------
 
 (defun %real-key (fs pathname)
