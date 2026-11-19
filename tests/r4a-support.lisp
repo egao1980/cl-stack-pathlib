@@ -105,9 +105,11 @@ on the local backend, the raw FS-WRITE-BYTES protocol call on memory."
       (memory-filesystem (fs-unlink fs (path-pathname path))))))
 
 (defun run-sh (dir script)
-  "Run SCRIPT with /bin/sh in the directory DIR (a separate process)."
+  "Run SCRIPT with /bin/sh in the directory DIR (a separate process).
+Both streams are captured: on ECL, UIOP's :OUTPUT NIL with :ERROR-OUTPUT
+:STRING fails every command (\"MISSING ERROR-OUTPUT-STREAM\")."
   (uiop:run-program (list "/bin/sh" "-c" (format nil "cd \"$1\" && ~A" script) "sh" (native dir))
-                    :output nil :error-output :string))
+                    :output :string :error-output :string))
 
 ;;; --- summaries for comparisons -------------------------------------------------------
 
