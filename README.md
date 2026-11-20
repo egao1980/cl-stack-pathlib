@@ -139,9 +139,11 @@ Symlinks behave as in `os.walk` / pathlib on every backend. `walk` lists a link 
 | Path | `exists-p` / `file-p` / `directory-p` | `file-size`, `last-modified`, `stat` |
 |------|---------------------------------------|--------------------------------------|
 | link to a file | T / T / NIL | the file's |
-| link to a directory | T / NIL / T | `stat` is `:directory` |
+| directory, or link to one | T / NIL / T | `file-size` 0 (= `stat` `:size`), `stat` is `:directory` |
 | dangling link | NIL | `path-not-found` |
 | link cycle | NIL | `symlink-loop` (a `path-error`, ELOOP) |
+
+`file-size` of a directory is 0 on the local, memory and zip backends (0.6.2), as its `stat` `:size`; it is never the local `st_size` of the directory and never `path-not-found`.
 
 `symlink-p` and `(stat p :follow-symlinks nil)` stay the `lstat(2)` view. On SBCL, local `file-p` / `exists-p` used to be true for a dangling link, because `probe-file` falls back to `lstat`. They now use `stat(2)` wherever there is a binding (SBCL and ECL on unix). The deprecated internals `%name-matches-p` and `%wild-pattern` are back as shims, so a backend that defines its own `fs-glob` against 0.5 still loads and runs.
 

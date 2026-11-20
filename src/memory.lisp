@@ -191,7 +191,10 @@ stat(2) is for the predicates."
   nil)
 
 (defmethod fs-file-size ((fs memory-filesystem) pathname)
-  (length (second (%mem-target-file fs pathname))))
+  "Bytes in the file PATHNAME (a final link is followed); a directory is 0."
+  (if (fs-directory-p fs pathname)
+      0
+      (length (second (%mem-target-file fs pathname)))))
 
 (defmethod fs-last-modified ((fs memory-filesystem) pathname)
   (third (%mem-target-file fs pathname)))
