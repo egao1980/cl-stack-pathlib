@@ -664,7 +664,8 @@ included), so atomic writes go through links."
                             (uiop:merge-pathnames* to (uiop:pathname-directory-pathname pn))))))
     pn))
 
-(defmethod fs-write-atomic ((fs local-filesystem) pathname bytes &key expected-hash)
+(defmethod fs-write-atomic ((fs local-filesystem) pathname bytes &key expected-hash mode)
+  (check-type mode (or null (integer 0)))
   (let* ((pn (fs-parse fs pathname))
          (vec (%coerce-octets bytes))
          (target (%local-write-target fs (fs-absolute fs pn))))
@@ -677,8 +678,10 @@ included), so atomic writes go through links."
       (unless proceed
         (return-from fs-write-atomic (values pn current nil))))
     (ensure-directories-exist target)
-    (let ((mode (let ((m (%local-raw-stat target t)))
-                  (and m (logand m #o7777))))
+    (let ((mode (if mode
+                    (logand mode #o7777)
+                    (let ((m (%local-raw-stat target t)))
+                      (and m (logand m #o7777)))))
           (tmp (uiop:merge-pathnames* (uiop:parse-unix-namestring (%atomic-temp-name target))
                                       (uiop:pathname-directory-pathname target)))
           (created nil)
@@ -697,6 +700,16 @@ included), so atomic writes go through links."
           (handler-case (delete-file tmp)
             (file-error () nil)))))
     (values pn (octets-hash vec) t)))
+
+(defmethod fs-chmod ((fs local-filesystem) pathname mode)
+  (check-type mode (integer 0))
+  (let ((pn (fs-parse fs pathname)))
+    (unless (fs-exists-p fs pn)
+      (error 'path-not-found :filesystem fs :path pn :message "path does not exist"))
+    #+(and (or sbcl ecl) unix)
+    (progn (%local-chmod pn (logand mode #o7777)) t)
+    #-(and (or sbcl ecl) unix)
+    nil))
 
 (defmethod fs-stat ((fs local-filesystem) pathname &key (follow-symlinks t))
   (let ((pn (fs-parse fs pathname)))

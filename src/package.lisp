@@ -53,6 +53,8 @@
    #:fs-open
    #:fs-content-hash
    #:fs-write-atomic
+   #:fs-chmod
+   #:fs-mode
    #:fs-stat
    #:fs-grep
    #:fs-grep-matcher

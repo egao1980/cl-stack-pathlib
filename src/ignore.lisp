@@ -326,11 +326,12 @@ skipped. This is what :IGNORE :AUTO uses."
 (defun %resolve-ignore (fs base ignore)
   "The matcher for the :IGNORE designator IGNORE of a walk / glob at BASE:
 NIL, the IGNORE-MATCHER itself, or for :AUTO the ignore files under BASE plus
-a final \".git/\" rule (highest precedence, so .git is always pruned)."
+a final \".git\" rule (highest precedence, so .git is always pruned: a
+directory, or the .git file of a linked worktree or submodule)."
   (etypecase ignore
     (null nil)
     (ignore-matcher ignore)
-    ((eql :auto) (merge-ignore (load-ignore-files fs base) (parse-ignore '(".git/"))))))
+    ((eql :auto) (merge-ignore (load-ignore-files fs base) (parse-ignore '(".git"))))))
 
 (defun %ignore-predicate (fs base ignore &key (prefix-of base))
   "NIL when IGNORE is NIL; otherwise a function (PATHNAME DIRECTORY-P) that is

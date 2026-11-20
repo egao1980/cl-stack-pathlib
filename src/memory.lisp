@@ -456,8 +456,9 @@ named under PATHNAME as given."
   (let ((ent (gethash key (memory-fs-root fs))))
     (and (consp ent) (eq (car ent) :file) ent)))
 
-(defmethod fs-write-atomic ((fs memory-filesystem) pathname bytes &key expected-hash)
-  ;; One table update: readers see the old entry or the new one.
+(defmethod fs-write-atomic ((fs memory-filesystem) pathname bytes &key expected-hash mode)
+  ;; One table update: readers see the old entry or the new one. No modes.
+  (check-type mode (or null (integer 0)))
   (let* ((abs (fs-absolute fs pathname))
          (vec (copy-seq (%coerce-octets bytes)))   ; checked + unaliased before any change
          (key (%mem-follow-symlink fs (%mem-key fs abs)))

@@ -309,7 +309,7 @@ of the posix namestring FS-READ-SYMLINK returns) under ROOT, minus IGNORE (NIL,
 an IGNORE-MATCHER relative to ROOT, or :AUTO as for FS-WALK). Directories are
 not entries. A missing ROOT signals PATH-NOT-FOUND. ROOT is not modified."))
 
-(defgeneric fs-restore (fs root snapshot &key store ignore)
+(defgeneric fs-restore (fs root snapshot &key store ignore mode)
   (:documentation "Make the tree under ROOT equal SNAPSHOT (an id in STORE,
 default *SNAPSHOT-STORE*): write files whose content or mode differ, create
 symlinks, delete files and symlinks not in the snapshot, then remove
@@ -317,7 +317,13 @@ directories left empty (never ROOT). Paths ignored by IGNORE (as FS-SNAPSHOT)
 are neither written nor deleted. ROOT is created when missing. An unknown
 SNAPSHOT signals SNAPSHOT-NOT-FOUND before anything is touched. Returns the
 FS-CHANGE list from the tree before the call to SNAPSHOT (NIL when nothing
-changed)."))
+changed).
+MODE: NIL (default: a rewritten file keeps its permission bits, a new one gets
+the process default) or permission bits (an integer, as FS-WRITE-ATOMIC :MODE)
+or a function of the entry's relative path returning such bits or NIL, for
+each regular file the restore writes. The execute bits then follow the
+snapshot entry (:EXECUTABLE sets them, :FILE clears them), so a snapshot's
+mode always wins on the execute bit. Ignored on backends without modes."))
 
 (defgeneric fs-snapshot-changes (store a b)
   (:documentation "FS-CHANGE list (sorted by path, STRING<) from snapshot A to
@@ -488,9 +494,15 @@ never ROOT itself."
                  (fs-rmdir fs d)
                  (return)))))
 
-(defun %write-entry (fs root entry octets)
+(defun %entry-write-mode (mode entry)
+  "Permission bits for writing ENTRY under the FS-RESTORE :MODE designator MODE."
+  (let ((bits (if (functionp mode) (funcall mode (snapshot-entry-path entry)) mode)))
+    (check-type bits (or null (integer 0)))
+    bits))
+
+(defun %write-entry (fs root entry octets &optional mode)
   "Make REL under ROOT hold ENTRY, whose content (file bytes or UTF-8 symlink
-target) is OCTETS."
+target) is OCTETS. MODE as FS-RESTORE's."
   (let ((pn (fs-join fs root (snapshot-entry-path entry))))
     ;; FS-WRITE-ATOMIC writes through symlinks: drop a link first.
     (when (fs-symlink-p fs pn) (fs-unlink fs pn))
@@ -500,11 +512,11 @@ target) is OCTETS."
        (fs-mkdir fs (fs-parent fs pn) :parents t :exist-ok t)
        (fs-create-symlink fs pn (utf8-decode octets)))
       ((:file :executable)
-       (fs-write-atomic fs pn octets)
+       (fs-write-atomic fs pn octets :mode (%entry-write-mode mode entry))
        ;; Local atomic writes keep an existing file's mode: set it both ways.
        (%fs-set-executable fs pn (eq (snapshot-entry-mode entry) :executable))))))
 
-(defun %apply-changes (fs root changes octets-of)
+(defun %apply-changes (fs root changes octets-of &optional mode)
   "Apply CHANGES (FS-CHANGE list, sorted by path) to the tree under ROOT:
 removals first (pruning directories they leave empty), then writes and mode
 changes. OCTETS-OF maps a SNAPSHOT-ENTRY to its content octets."
@@ -516,7 +528,7 @@ changes. OCTETS-OF maps a SNAPSHOT-ENTRY to its content octets."
     (case (fs-change-kind c)
       ((:added :modified)
        (let ((new (%change-new-entry c)))
-         (%write-entry fs root new (funcall octets-of new))))
+         (%write-entry fs root new (funcall octets-of new) mode)))
       (:mode-changed
        (%fs-set-executable fs (fs-join fs root (fs-change-path c))
                            (eq (fs-change-new-mode c) :executable))))))
@@ -531,8 +543,9 @@ changes. OCTETS-OF maps a SNAPSHOT-ENTRY to its content octets."
                         (snapshot-manifest-octets
                          (%tree-entries fs root (%resolve-ignore fs root ignore) :store store)))))
 
-(defmethod fs-restore ((fs filesystem) root snapshot &key (store *snapshot-store*) ignore)
+(defmethod fs-restore ((fs filesystem) root snapshot &key (store *snapshot-store*) ignore mode)
   (check-type snapshot string)
+  (check-type mode (or null (integer 0) function))
   (let* ((root (%dir-root fs root))
          (target (%manifest-entries store snapshot)))
     ;; Every blob must be there before anything is touched (ROOT included).
@@ -552,7 +565,8 @@ changes. OCTETS-OF maps a SNAPSHOT-ENTRY to its content octets."
       (unless exists
         (fs-mkdir fs root :parents t :exist-ok t))
       (%apply-changes fs root changes
-                      (lambda (entry) (snapshot-store-get store (snapshot-entry-hash entry))))
+                      (lambda (entry) (snapshot-store-get store (snapshot-entry-hash entry)))
+                      mode)
       changes)))
 
 (defmethod fs-snapshot-changes ((store snapshot-store) a b)
@@ -567,10 +581,11 @@ changes. OCTETS-OF maps a SNAPSHOT-ENTRY to its content octets."
   (let ((p (ensure-path designator :directory t)))
     (fs-snapshot (path-filesystem p) (path-pathname p) :ignore ignore :store store)))
 
-(defun restore-snapshot (designator snapshot &key (store *snapshot-store*) ignore)
+(defun restore-snapshot (designator snapshot &key (store *snapshot-store*) ignore mode)
   "FS-RESTORE SNAPSHOT into the directory DESIGNATOR."
   (let ((p (ensure-path designator :directory t)))
-    (fs-restore (path-filesystem p) (path-pathname p) snapshot :store store :ignore ignore)))
+    (fs-restore (path-filesystem p) (path-pathname p) snapshot
+                :store store :ignore ignore :mode mode)))
 
 (defun snapshot-changes (a b &key (store *snapshot-store*))
   "FS-SNAPSHOT-CHANGES from A to B in STORE."
