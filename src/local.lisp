@@ -201,7 +201,11 @@ than the directory it points at."
   #-(or sbcl ecl) nil)
 
 (defmethod fs-file-size ((fs local-filesystem) pathname)
+  "Bytes in the file PATHNAME (a final link is followed). A directory is 0
+on every backend, as its STAT :size (#33)."
   (%local-target-or-error fs pathname)
+  (when (fs-directory-p fs pathname)
+    (return-from fs-file-size 0))
   (with-open-file (s (fs-parse fs pathname) :direction :input :element-type '(unsigned-byte 8)
                       :if-does-not-exist :error)
     (file-length s)))

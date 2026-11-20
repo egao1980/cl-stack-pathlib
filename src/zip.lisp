@@ -286,9 +286,11 @@
 (defmethod fs-file-size ((fs zip-filesystem) pathname)
   (let ((ent (gethash (%zip-key fs (fs-absolute fs pathname))
                       (zip-filesystem-entries fs))))
-    (unless (%zip-file-entry-p ent)
-      (error 'path-not-found :filesystem fs :path pathname))
-    (compression-protocol:archive-entry-uncompressed-size ent)))
+    (cond
+      ((%zip-file-entry-p ent)
+       (compression-protocol:archive-entry-uncompressed-size ent))
+      ((fs-directory-p fs pathname) 0)   ; a directory is 0, as on local (#33)
+      (t (error 'path-not-found :filesystem fs :path pathname)))))
 
 (defun %dos-datetime-universal (date time)
   (let ((day (logand date #x1f))
