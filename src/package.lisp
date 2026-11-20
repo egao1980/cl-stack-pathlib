@@ -251,6 +251,9 @@
    #:snapshot-store-put
    #:snapshot-store-get
    #:snapshot-store-contains-p
+   #:snapshot-store-ids
+   #:snapshot-store-delete
+   #:snapshot-reachable-ids
    #:snapshot-entry
    #:make-snapshot-entry
    #:snapshot-entry-path

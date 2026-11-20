@@ -210,7 +210,8 @@ absent manifest signals SNAPSHOT-NOT-FOUND."
 
 (defclass snapshot-store () ()
   (:documentation "Content-addressed blob store for snapshots. Specialize
-SNAPSHOT-STORE-PUT, SNAPSHOT-STORE-GET and SNAPSHOT-STORE-CONTAINS-P."))
+SNAPSHOT-STORE-PUT, SNAPSHOT-STORE-GET and SNAPSHOT-STORE-CONTAINS-P, and for
+garbage collection SNAPSHOT-STORE-IDS and SNAPSHOT-STORE-DELETE."))
 
 (defun snapshot-store-p (x) (typep x 'snapshot-store))
 
@@ -252,6 +253,25 @@ absent."))
 
 (defgeneric snapshot-store-contains-p (store id)
   (:documentation "True when the blob ID is in STORE."))
+
+(defgeneric snapshot-store-ids (store)
+  (:documentation "Fresh list of every blob id in STORE (manifests and
+content alike), sorted STRING<. A blob being written concurrently may or may
+not be listed; a partially written one never is."))
+
+(defgeneric snapshot-store-delete (store id)
+  (:documentation "Remove the blob ID from STORE. → T when it was there, NIL
+otherwise (idempotent; an ID that is not a digest is never there). Deleting a
+blob a manifest still names makes that snapshot unrestorable: compute the live
+set with SNAPSHOT-REACHABLE-IDS first."))
+
+(defmethod snapshot-store-ids ((store memory-snapshot-store))
+  (sort (loop for id being the hash-keys of (%memory-snapshot-store-blobs store)
+              collect id)
+        #'string<))
+
+(defmethod snapshot-store-delete ((store memory-snapshot-store) id)
+  (and (remhash id (%memory-snapshot-store-blobs store)) t))
 
 (defmethod snapshot-store-put ((store memory-snapshot-store) octets)
   (let* ((v (%coerce-octets octets))
@@ -297,6 +317,49 @@ digest (such an id is never in the store)."
 
 (defmethod snapshot-store-contains-p ((store directory-snapshot-store) id)
   (%blob-file-p (%blob-path store id)))
+
+(defun %lower-hex-p (string length)
+  (and (= (length string) length)
+       (every (lambda (c) (or (digit-char-p c) (find c "abcdef"))) string)))
+
+(defmethod snapshot-store-ids ((store directory-snapshot-store))
+  ;; Only names of the blob layout count: atomic-write temp files
+  ;; (\".<name>.<hex>.tmp\") and anything else in the tree are skipped.
+  (let* ((top (join (directory-snapshot-store-root store) "blobs" "sha256"))
+         (fs (path-filesystem top))
+         (dir (path-pathname (ensure-directory top)))
+         (out '()))
+    (when (fs-directory-p fs dir)
+      (dolist (sub (fs-iterdir fs dir))
+        (let ((prefix (%entry-name sub)))
+          (when (and (%lower-hex-p prefix 2) (fs-directory-p fs sub))
+            (dolist (f (fs-iterdir fs (uiop:ensure-directory-pathname sub)))
+              (let ((rest (%entry-name f)))
+                (when (and (%lower-hex-p rest 62) (fs-file-p fs f))
+                  (push (concatenate 'string "sha256:" prefix rest) out))))))))
+    (sort out #'string<)))
+
+(defmethod snapshot-store-delete ((store directory-snapshot-store) id)
+  ;; The fan-out directory is kept: removing it could race a concurrent put.
+  (let ((p (%blob-path store id)))
+    (when (%blob-file-p p)
+      (fs-unlink (path-filesystem p) (path-pathname p) :missing-ok t)
+      t)))
+
+(defun snapshot-reachable-ids (store snapshot-ids)
+  "Sorted (STRING<), deduplicated list of the blob ids the snapshots
+SNAPSHOT-IDS (a list of ids in STORE) need: each manifest id and the hash of
+every entry it names — the mark phase of a sweep over SNAPSHOT-STORE-IDS. A
+missing manifest signals SNAPSHOT-NOT-FOUND (never silently treated as empty);
+NIL in SNAPSHOT-IDS (the empty tree) adds nothing. Entry blobs are not checked
+for presence."
+  (let ((seen (make-hash-table :test #'equal)))
+    (dolist (id snapshot-ids)
+      (when id
+        (dolist (e (%manifest-entries store id))
+          (setf (gethash (snapshot-entry-hash e) seen) t))
+        (setf (gethash id seen) t)))
+    (sort (loop for k being the hash-keys of seen collect k) #'string<)))
 
 ;;; --- protocol ------------------------------------------------------------------
 
