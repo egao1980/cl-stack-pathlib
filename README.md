@@ -143,6 +143,8 @@ Symlinks behave as in `os.walk` / pathlib on every backend. `walk` lists a link 
 | dangling link | NIL | `path-not-found` |
 | link cycle | NIL | `symlink-loop` (a `path-error`, ELOOP) |
 
+**0.8.0:** snapshot-store garbage collection: `snapshot-store-ids` (every blob id, sorted), `snapshot-store-delete` (→ T when it was there; idempotent) on the memory and directory stores, and `snapshot-reachable-ids` (manifests + entry blobs of a list of snapshots; a missing manifest signals `snapshot-not-found`) for the mark phase.
+
 **0.7.0:** `fs-chmod fs path mode` / `(setf (fs-mode fs path) mode)` set permission bits (sb-posix / ECL chmod on unix; a no-op returning NIL on memory, zip and Windows); `fs-mode` reads them. `fs-write-atomic`, `write-bytes` and `fs-restore` / `restore-snapshot` take `:mode` (bits, or for restore a function of the relative path); on restore the snapshot entry's execute bit is applied on top. `:ignore :auto` ignores `.git` whether it is a directory or the `.git` file of a linked worktree / submodule.
 
 `file-size` of a directory is 0 on the local, memory and zip backends (0.6.2), as its `stat` `:size`; it is never the local `st_size` of the directory and never `path-not-found`.
