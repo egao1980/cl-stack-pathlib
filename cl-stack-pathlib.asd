@@ -1,5 +1,5 @@
 (defsystem "cl-stack-pathlib"
-  :version "0.6.3"
+  :version "0.7.0"
   :description "CLOS paths + pluggable filesystems (pathlib/NIO-style) for cl-stack"
   :author "egao1980"
   :license "MIT"
@@ -56,7 +56,8 @@
                (:file "symlink-walk-test")
                (:file "final-link-test")
                (:file "legacy-glob-test")
-               (:file "symlink-p-test"))
+               (:file "symlink-p-test")
+               (:file "mode-test"))
   :perform (test-op (o c)
              (unless (symbol-call :rove :run c)
                (error "tests failed for ~A" (component-name c)))))

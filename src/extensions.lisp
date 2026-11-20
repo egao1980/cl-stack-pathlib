@@ -143,9 +143,25 @@ final LF does not start an extra empty line."
     (error 'path-error :filesystem fs :path pathname :message "is a directory"))
   (octets-hash (fs-read-bytes fs pathname)))
 
-(defmethod fs-write-atomic ((fs filesystem) pathname bytes &key expected-hash)
-  (declare (ignore bytes expected-hash))
+(defmethod fs-write-atomic ((fs filesystem) pathname bytes &key expected-hash mode)
+  (declare (ignore bytes expected-hash mode))
   (%unsupported fs 'fs-write-atomic pathname))
+
+(defmethod fs-chmod ((fs filesystem) pathname mode)
+  (check-type mode (integer 0))
+  (unless (or (fs-exists-p fs pathname) (fs-symlink-p fs pathname))
+    (error 'path-not-found :filesystem fs :path pathname :message "path does not exist"))
+  nil)
+
+(defun fs-mode (fs pathname)
+  "Permission bits of PATHNAME (symlinks followed; FILE-STAT-MODE), or NIL on
+a backend without modes."
+  (file-stat-mode (fs-stat fs pathname)))
+
+(defun (setf fs-mode) (mode fs pathname)
+  "FS-CHMOD PATHNAME to MODE → MODE."
+  (fs-chmod fs pathname mode)
+  mode)
 
 (defmethod fs-stat ((fs filesystem) pathname &key (follow-symlinks t))
   (let ((pn (fs-parse fs pathname)))

@@ -135,7 +135,7 @@ stream; prefer WITH-OPEN-PATH."))
 OCTETS-HASH (\"sha256:\" + 64 lowercase hex digits). A missing file signals
 PATH-NOT-FOUND; a directory signals PATH-ERROR."))
 
-(defgeneric fs-write-atomic (fs pathname bytes &key expected-hash)
+(defgeneric fs-write-atomic (fs pathname bytes &key expected-hash mode)
   (:documentation "Replace the file at PATHNAME with BYTES so that readers see
 the old or the new content, never a mix. Local: a temp file in the same
 directory, then rename(2); no temp file survives success or failure. Missing
@@ -146,8 +146,19 @@ that hash) or :ABSENT (the file must not exist). On mismatch signals
 CONTENT-HASH-MISMATCH with restarts OVERWRITE (write anyway) and USE-CURRENT
 (write nothing).
 
+MODE: NIL (default: an existing file keeps its mode, a new one gets the
+process default, e.g. 0644) or permission bits (an integer, LOGAND #o7777)
+given to the file before it replaces the old one. Ignored on backends without
+modes (see FS-CHMOD).
+
 Returns (values pathname hash written-p): HASH is the digest of the content
 now at PATHNAME (BYTES, or the current content after USE-CURRENT)."))
+
+(defgeneric fs-chmod (fs pathname mode)
+  (:documentation "Set the permission bits of PATHNAME (symlinks followed) to
+MODE, an integer (LOGAND #o7777 is used: #o755, #o644 …). Returns T when the
+mode was set, NIL on a backend or platform without POSIX modes (memory, zip,
+Windows), where it is a no-op. A missing PATHNAME signals PATH-NOT-FOUND."))
 
 (defgeneric fs-stat (fs pathname &key follow-symlinks)
   (:documentation "A FILE-STAT for PATHNAME (FOLLOW-SYMLINKS default T; NIL

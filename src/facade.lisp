@@ -469,18 +469,19 @@ IGNORE: NIL, an IGNORE-MATCHER or :AUTO (see FS-GLOB)."
     (let ((p (ensure-path designator)))
       (fs-read-bytes (path-filesystem p) (path-pathname p)))))
 
-(defun write-bytes (designator bytes &key append atomic expected-hash)
-  "Write BYTES to DESIGNATOR. ATOMIC or EXPECTED-HASH go through
-FS-WRITE-ATOMIC and return (values path hash written-p); APPEND cannot be
-combined with them."
-  (when (and append (or atomic expected-hash))
-    (error "WRITE-BYTES: :APPEND cannot be combined with :ATOMIC or :EXPECTED-HASH"))
+(defun write-bytes (designator bytes &key append atomic expected-hash mode)
+  "Write BYTES to DESIGNATOR. ATOMIC, EXPECTED-HASH or MODE go through
+FS-WRITE-ATOMIC (MODE: its permission bits) and return (values path hash
+written-p); APPEND cannot be combined with them."
+  (when (and append (or atomic expected-hash mode))
+    (error "WRITE-BYTES: :APPEND cannot be combined with :ATOMIC, :EXPECTED-HASH or :MODE"))
   (with-path-restarts
     (let* ((p (ensure-path designator))
            (fs (path-filesystem p)))
-      (if (or atomic expected-hash)
+      (if (or atomic expected-hash mode)
           (multiple-value-bind (pn hash written-p)
-              (fs-write-atomic fs (path-pathname p) bytes :expected-hash expected-hash)
+              (fs-write-atomic fs (path-pathname p) bytes :expected-hash expected-hash
+                                                         :mode mode)
             (values (%wrap fs pn) hash written-p))
           (%wrap fs (fs-write-bytes fs (path-pathname p) bytes :append append))))))
 

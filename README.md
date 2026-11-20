@@ -72,7 +72,7 @@ Pure Lisp, no extra dependencies. Portable defaults on `filesystem` (memory and 
 (file-stat-mode (stat "a.txt"))               ; kind / size / mtime / mode; lazy FILE-STAT-HASH
 
 ;; .gitignore / .ignore semantics (gitignore(5); verified against git)
-(walk "." :ignore :auto)                      ; ignored dirs are pruned, .git/ always
+(walk "." :ignore :auto)                      ; ignored dirs are pruned, .git (dir or file) always
 (rglob "." "*.lisp" :ignore (parse-ignore "build/"))
 (grep "." "defun" :include "*.lisp" :max-results 50)   ; → (values matches truncated-p)
 ```
@@ -142,6 +142,8 @@ Symlinks behave as in `os.walk` / pathlib on every backend. `walk` lists a link 
 | directory, or link to one | T / NIL / T | `file-size` 0 (= `stat` `:size`), `stat` is `:directory` |
 | dangling link | NIL | `path-not-found` |
 | link cycle | NIL | `symlink-loop` (a `path-error`, ELOOP) |
+
+**0.7.0:** `fs-chmod fs path mode` / `(setf (fs-mode fs path) mode)` set permission bits (sb-posix / ECL chmod on unix; a no-op returning NIL on memory, zip and Windows); `fs-mode` reads them. `fs-write-atomic`, `write-bytes` and `fs-restore` / `restore-snapshot` take `:mode` (bits, or for restore a function of the relative path); on restore the snapshot entry's execute bit is applied on top. `:ignore :auto` ignores `.git` whether it is a directory or the `.git` file of a linked worktree / submodule.
 
 `file-size` of a directory is 0 on the local, memory and zip backends (0.6.2), as its `stat` `:size`; it is never the local `st_size` of the directory and never `path-not-found`.
 
