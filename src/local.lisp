@@ -153,12 +153,27 @@ UIOP TRUENAMIZE alone is not enough — it succeeds for missing leaves."
 dir/link/ loses its trailing slash, so lstat(2) sees the link itself rather
 than the directory it points at."
   (let ((s (uiop:native-namestring (fs-parse fs pathname))))
-    (if (and (> (length s) 1) (char= (char s (1- (length s))) #\/))
+    (if (and (> (length s) 1) (member (char s (1- (length s))) '(#\/ #+win32 #\\)))
         (subseq s 0 (1- (length s)))
         s)))
 
+#+(and sbcl win32)
+(defun %win32-reparse-point-p (namestring)
+  "T when NAMESTRING is a reparse point (a symlink or junction): win32
+sb-posix has no S-ISLNK, and SBCL's own file-kind probe never answers
+:SYMLINK there. Looked up at run time, so no undefined-function warning."
+  (let ((get (find-symbol "GET-FILE-ATTRIBUTES" "SB-WIN32")))
+    (when (and get (fboundp get))
+      (let ((attrs (ignore-errors (funcall get namestring))))
+        (and (integerp attrs)
+             (/= attrs -1)
+             (/= attrs #xFFFFFFFF)
+             (logtest attrs #x400))))))
+
 (defmethod fs-symlink-p ((fs local-filesystem) pathname)
-  #+sbcl
+  #+(and sbcl win32)
+  (%win32-reparse-point-p (%link-namestring fs pathname))
+  #+(and sbcl (not win32))
   (handler-case
       (let ((stat (sb-posix:lstat (%link-namestring fs pathname))))
         (sb-posix:s-islnk (sb-posix:stat-mode stat)))
