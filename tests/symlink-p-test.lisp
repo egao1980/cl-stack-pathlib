@@ -5,8 +5,8 @@
 ;;; file or directory is not.
 
 (defun %native-link-name (path)
-  (let ((s (uiop:native-namestring path)))
-    (string-right-trim "/\\" s)))
+  (let ((s (string-right-trim "/\\" (as-namestring path))))
+    (if (uiop:os-windows-p) (substitute #\\ #\/ s) s)))
 
 (defun %make-local-link (link target)
   "LINK → TARGET (a directory): a junction on Windows (no privilege needed),
