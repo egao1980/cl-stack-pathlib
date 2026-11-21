@@ -202,8 +202,11 @@ pathnames (directory form for a DIRECTORY)."
 
 (defun %base-symlinks ()
   "(relative-path target): a file link and a directory link (never
-followed). No link dangles or points up with \"..\": SBCL's DIRECTORY drops
-such links from local listings (cl-stack-pathlib#41)."
+followed). No link ever dangles (local listings drop a dangling relative
+link: cl-stack-pathlib#41), and none points up with \"..\" (moved with its
+directory by :DIRECTORY-RENAME, such a link was left behind by an area
+discard in a trial run). FS-CLONE-TREE on \"..\" links is tested in
+tests/clone-test.lisp."
   '(("link" "a.txt")
     ("lnk-dir" "src")))
 
