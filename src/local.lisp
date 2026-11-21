@@ -376,7 +376,13 @@ symlinks to directories included."
         (overwrite ()
           :report (lambda (s) (format s "Replace existing ~A" to))
           (return-from fs-rename (fs-rename fs from to :replace t)))))
-    (rename-file from to)
+    ;; A file over an existing file (or link): rename(2) / MoveFileEx, which
+    ;; replace. CL:RENAME-FILE does not replace on ECL ("... already exists").
+    (if (and (not (fs-directory-p fs from))
+             (or (fs-exists-p fs to) (fs-symlink-p fs to))
+             (not (fs-directory-p fs to)))
+        (%local-rename fs from to)
+        (rename-file from to))
     to))
 
 (defmethod fs-copy ((fs local-filesystem) source target &key (replace t))
