@@ -1,5 +1,5 @@
 (defsystem "cl-stack-pathlib"
-  :version "0.9.0"
+  :version "0.10.0"
   :description "CLOS paths + pluggable filesystems (pathlib/NIO-style) for cl-stack"
   :author "egao1980"
   :license "MIT"
@@ -23,6 +23,7 @@
                (:file "extensions")
                (:file "snapshot")
                (:file "journal")
+               (:file "clone")
                (:file "area"))
   :in-order-to ((test-op (test-op "cl-stack-pathlib/tests"))))
 
@@ -32,8 +33,15 @@
   :pathname "tests"
   :components ((:file "journal-suite")))
 
+(defsystem "cl-stack-pathlib/clone-suite"
+  :description "R4c clone laws: equivalence with :copy, independence, metadata; every clone mechanism runs it"
+  :depends-on ("cl-stack-pathlib" "uiop")
+  :pathname "tests"
+  :components ((:file "clone-suite")))
+
 (defsystem "cl-stack-pathlib/tests"
-  :depends-on ("cl-stack-pathlib" "cl-stack-pathlib/journal-suite" "rove")
+  :depends-on ("cl-stack-pathlib" "cl-stack-pathlib/journal-suite"
+               "cl-stack-pathlib/clone-suite" "rove")
   :pathname "tests"
   :serial t
   :components ((:file "package")
@@ -67,7 +75,9 @@
                (:file "mode-test")
                (:file "store-gc-test")
                (:file "journal-fakes")
-               (:file "journal-test"))
+               (:file "journal-test")
+               (:file "clone-fakes")
+               (:file "clone-test"))
   :perform (test-op (o c)
              (unless (symbol-call :rove :run c)
                (error "tests failed for ~A" (component-name c)))))
