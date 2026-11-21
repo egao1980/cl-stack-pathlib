@@ -428,30 +428,39 @@ PATHNAME follow EXECUTABLE. A no-op on backends without modes.")
 (defun %child-names (fs dir)
   (remove-duplicates (mapcar #'%entry-name (fs-iterdir fs dir)) :test #'string=))
 
-(defun %scan-tree (fs root matcher)
+(defun %scan-tree (fs root matcher &key focus)
   "%NODEs under the directory ROOT, sorted by path (STRING<). Ignored entries
 and everything below ignored directories are left out; symlinks are nodes and
-are never followed. Other kinds (fifos, sockets) are skipped."
+are never followed. Other kinds (fifos, sockets) are skipped.
+FOCUS (R4b-0), when given, narrows the walk: a function of a relative path
+that returns :SUBTREE (that entry and everything below it are scanned as
+usual), :ANCESTOR (a directory listed on the way down; it is no node itself,
+and a symlink, file or ignored directory there stops the descent) or NIL
+(skipped, never stat'ed). Without FOCUS the whole tree is scanned."
   (let ((out '()))
     (labels ((ignored-p (rel directory)
                (and matcher (ignore-path-p matcher rel :directory directory)))
-             (visit (dir prefix)
+             (visit (dir prefix all)
                (dolist (name (%child-names fs dir))
-                 (let ((rel (concatenate 'string prefix name))
-                       ;; Rebuilt in file form: lstat("link/") would follow the link.
-                       (pn (fs-join fs dir name)))
-                   (cond ((fs-symlink-p fs pn)
-                          (unless (ignored-p rel nil)
-                            (push (%make-node rel :symlink pn) out)))
-                         ((fs-directory-p fs pn)
-                          (unless (ignored-p rel t)
-                            (let ((d (uiop:ensure-directory-pathname pn)))
-                              (push (%make-node rel :directory d) out)
-                              (visit d (concatenate 'string rel "/")))))
-                         ((fs-file-p fs pn)
-                          (unless (ignored-p rel nil)
-                            (push (%make-node rel :file pn) out))))))))
-      (visit root ""))
+                 (let* ((rel (concatenate 'string prefix name))
+                        (how (if all :subtree (funcall focus rel))))
+                   (when how
+                     (let ((whole (eq how :subtree))
+                           ;; Rebuilt in file form: lstat("link/") would follow the link.
+                           (pn (fs-join fs dir name)))
+                       (cond ((fs-symlink-p fs pn)
+                              (when (and whole (not (ignored-p rel nil)))
+                                (push (%make-node rel :symlink pn) out)))
+                             ((fs-directory-p fs pn)
+                              (unless (ignored-p rel t)
+                                (let ((d (uiop:ensure-directory-pathname pn)))
+                                  (when whole
+                                    (push (%make-node rel :directory d) out))
+                                  (visit d (concatenate 'string rel "/") whole))))
+                             ((fs-file-p fs pn)
+                              (when (and whole (not (ignored-p rel nil)))
+                                (push (%make-node rel :file pn) out))))))))))
+      (visit root "" (null focus)))
     (sort out #'string< :key #'%node-path)))
 
 (defun %owner-executable-p (fs pathname)

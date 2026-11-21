@@ -10,12 +10,6 @@
 ;;; when none is available for the volume, the journal is the :POLL one,
 ;;; whose every drain is (VALUES NIL NIL). Areas (area.lisp) attach a
 ;;; journal to their root and narrow FS-AREA-CHANGES to the drained paths.
-;;;
-;;; Contract stubs: every call of %R4B0-PENDING is replaced by the
-;;; implementation, which then deletes %R4B0-PENDING.
-
-(defun %r4b0-pending (what)
-  (error "cl-stack-pathlib R4b-0: ~A is not implemented yet" what))
 
 ;;; --- conditions ----------------------------------------------------------------
 
@@ -111,6 +105,20 @@ opaque: change it with REGISTER-WATCH-MECHANISM and
 UNREGISTER-WATCH-MECHANISM, which never modify the old list, so a LET
 binding of this variable scopes registrations.")
 
+(defstruct (%watch-mechanism (:constructor %make-watch-mechanism (name constructor rank probe))
+                             (:copier nil) (:predicate nil))
+  (name nil :read-only t)          ; keyword
+  (constructor nil :read-only t)   ; (fs directory matcher) -> journal
+  (rank 0 :read-only t)            ; integer, highest first
+  (probe nil :read-only t))        ; AVAILABLE-P: NIL (always) or (fs directory)
+
+(defun %find-watch-mechanism (name)
+  (find name *watch-mechanisms* :key #'%watch-mechanism-name))
+
+(defun %watch-mechanism-available-p (m fs directory)
+  (let ((probe (%watch-mechanism-probe m)))
+    (or (null probe) (and (funcall probe fs directory) t))))
+
 (defun register-watch-mechanism (name constructor &key (rank 0) available-p)
   "Register (or replace, keeping its place) the journal mechanism NAME, a
 keyword other than :POLL and :AUTO (those signal an ERROR). CONSTRUCTOR is
@@ -121,37 +129,98 @@ orders mechanisms, highest first; equal ranks keep registration order.
 AVAILABLE-P, NIL (always) or a function of (fs directory), tells whether the
 mechanism can watch that directory (the volume, the OS, the filesystem
 class). Returns NAME."
-  (declare (ignore name constructor rank available-p))
-  (%r4b0-pending 'register-watch-mechanism))
+  (check-type name (and keyword (not (member :poll :auto)))
+              "a watch mechanism keyword other than the reserved :POLL and :AUTO")
+  (check-type constructor (or function symbol))
+  (check-type rank integer)
+  (check-type available-p (or null function symbol))
+  (let ((new (%make-watch-mechanism name constructor rank available-p)))
+    ;; SUBSTITUTE and APPEND both return a fresh list (the old one is never
+    ;; modified, so an outer LET binding keeps its value).
+    (setf *watch-mechanisms*
+          (if (%find-watch-mechanism name)
+              (substitute new name *watch-mechanisms* :key #'%watch-mechanism-name)
+              (append *watch-mechanisms* (list new)))))
+  name)
 
 (defun unregister-watch-mechanism (name)
   "Remove the mechanism NAME. → T when it was registered, else NIL."
-  (declare (ignore name))
-  (%r4b0-pending 'unregister-watch-mechanism))
+  (when (%find-watch-mechanism name)
+    (setf *watch-mechanisms* (remove name *watch-mechanisms* :key #'%watch-mechanism-name))
+    t))
 
 (defun watch-mechanisms (&optional fs directory)
   "Names of the registered mechanisms, best first (rank, then registration
 order), followed by :POLL. With FS and DIRECTORY, only the mechanisms
 available for that directory; :POLL is always last."
-  (declare (ignore fs directory))
-  (%r4b0-pending 'watch-mechanisms))
+  (let* ((dir (and fs directory (%dir-root fs directory)))
+         ;; LOOP COLLECT makes a fresh list: STABLE-SORT never sees
+         ;; *WATCH-MECHANISMS* itself.
+         (ms (loop for m in *watch-mechanisms*
+                   when (or (null dir) (%watch-mechanism-available-p m fs dir))
+                     collect m)))
+    (append (mapcar #'%watch-mechanism-name
+                    (stable-sort ms #'> :key #'%watch-mechanism-rank))
+            (list :poll))))
 
 ;;; --- default methods -----------------------------------------------------------
 
 (defmethod fs-watch ((fs filesystem) directory &key ignore (mechanism :auto))
-  (declare (ignore directory ignore mechanism))
-  (%r4b0-pending 'fs-watch))
+  (check-type mechanism keyword)
+  (let ((dir (%dir-root fs directory)))
+    (unless (fs-directory-p fs dir)
+      (error 'path-not-found :filesystem fs :path dir
+                             :message "the directory to watch does not exist"))
+    (let* ((name (if (eq mechanism :auto) (first (watch-mechanisms fs dir)) mechanism))
+           (m (unless (eq name :poll) (%find-watch-mechanism name))))
+      (unless (or (eq name :poll) (and m (%watch-mechanism-available-p m fs dir)))
+        (%unsupported fs (format nil "watch mechanism ~S" name) dir))
+      (let ((matcher (%resolve-ignore fs dir ignore))) ; :AUTO resolved once, here
+        (if (eq name :poll)
+            (make-instance 'poll-journal :filesystem fs :root dir :ignore matcher)
+            (let ((j (funcall (%watch-mechanism-constructor m) fs dir matcher)))
+              (unless (and (journal-p j) (journal-open-p j) (eq name (journal-mechanism j)))
+                (when (journal-p j)
+                  (journal-close j))
+                (error 'journal-error
+                       :journal j
+                       :message (format nil "watch mechanism ~S did not return an open ~S journal"
+                                        name name)))
+              j))))))
 
 (defmethod journal-drain :around ((journal journal) &key (settle *journal-settle*))
-  (declare (ignore settle))
-  (%r4b0-pending 'journal-drain))
+  (unless (journal-open-p journal)
+    (error 'journal-error :journal journal :message "drain of a closed journal"))
+  (check-type settle (real 0))          ; before the mechanism is reached
+  ;; The explicit SETTLE: the default *JOURNAL-SETTLE* reaches the mechanism.
+  (multiple-value-bind (raw complete-p) (call-next-method journal :settle settle)
+    (unless complete-p
+      (return-from journal-drain (values nil nil)))
+    (let ((matcher (journal-ignore journal))
+          (seen (make-hash-table :test #'equal))
+          (out '()))
+      (dolist (r raw)
+        (let ((p (string-right-trim "/" r)))
+          (when (zerop (length p))          ; "" (or "/"): the root itself
+            (return-from journal-drain (values nil nil)))
+          ;; The raw path: IGNORE-PATH-P reads a trailing "/" as a directory.
+          (unless (or (gethash p seen)
+                      (and matcher (ignore-path-p matcher r)))
+            (setf (gethash p seen) t)
+            (push p out))))
+      (values (sort out #'string<) t))))
 
 (defmethod journal-drain ((journal poll-journal) &key settle)
   (declare (ignore settle))
-  (%r4b0-pending 'journal-drain))
+  (values nil nil))
 
 (defmethod journal-close :around ((journal journal))
-  (%r4b0-pending 'journal-close))
+  ;; Marked closed before the primary methods run: they run exactly once,
+  ;; even when they signal or a handler closes the journal again.
+  (when (journal-open-p journal)
+    (setf (%journal-state journal) :closed)
+    (call-next-method))
+  nil)
 
 (defmethod journal-close ((journal journal))
   nil)

@@ -62,6 +62,10 @@ ABORT-COMMIT (write nothing; the area stays open).")
    (opened-at :initarg :opened-at :reader %area-opened-at :initform nil)
    (journal :initarg :journal :accessor %area-journal :initform nil
             :documentation "R4b-0: the JOURNAL over the copy, or NIL (full rescans).")
+   (entries :initarg :entries :accessor %area-entries :initform nil
+            :documentation "R4b-0, with a journal: the sorted SNAPSHOT-ENTRY list of
+the copy as of the previous FS-AREA-CHANGES (the manifest at open), which the
+drained paths narrow; :STALE after a failed call (the next one rescans).")
    (state :initarg :state :accessor %area-state :initform :open
           :documentation ":OPEN or :CLOSED."))
   (:documentation "A writable copy of a base directory. Made by FS-OPEN-AREA."))
@@ -260,6 +264,62 @@ CUTOFF (open time - 2 s)."
            (and (eql (file-stat-size st) (%area-record-size record))
                 (eql (file-stat-mtime st) mtime))))))
 
+(defun %close-area-journal (area)
+  (let ((j (%area-journal area)))
+    (when j
+      (journal-close j))))
+
+(defun %covered-p (rel drained)
+  "True when REL, or one of its ancestors, is a key of the EQUAL hash table DRAINED."
+  (or (gethash rel drained)
+      (loop for k = (position #\/ rel) then (position #\/ rel :start (1+ k))
+            while k
+              thereis (gethash (subseq rel 0 k) drained))))
+
+(defun %narrow-entries (area entries paths)
+  "ENTRIES (sorted) with everything at or below a drained path in PATHS
+replaced by what the area's tree holds there now. Each drained path is looked
+up from the root by exact name in its parent's listing, through real,
+non-ignored ancestor directories (the walk of %SCAN-TREE, focused); nothing
+outside PATHS is looked at. Re-examined files are always hashed."
+  (let ((drained (make-hash-table :test #'equal))
+        (above (make-hash-table :test #'equal)))
+    (dolist (p paths)
+      (setf (gethash p drained) t)
+      (loop for k = (position #\/ p) then (position #\/ p :start (1+ k))
+            while k
+            do (setf (gethash (subseq p 0 k) above) t)))
+    (let* ((fs (area-filesystem area))
+           (kept (remove-if (lambda (rel) (%covered-p rel drained)) entries
+                            :key #'snapshot-entry-path))
+           (fresh (loop for node in (%scan-tree fs (%area-root area) (area-ignore area)
+                                                :focus (lambda (rel)
+                                                         (cond ((gethash rel drained) :subtree)
+                                                               ((gethash rel above) :ancestor))))
+                        unless (eq (%node-kind node) :directory)
+                          collect (%node-entry fs node))))
+      ;; Disjoint (FRESH is all covered, KEPT none) and both sorted STRING<.
+      ;; COPY-LIST: REMOVE-IF may share structure with the previous state.
+      (merge 'list (copy-list kept) fresh #'string< :key #'snapshot-entry-path))))
+
+(defun %journal-area-entries (area)
+  "The area's entries now, through its journal: drain, then narrow the state
+of the previous call (or rescan everything when the drain is not complete or
+the previous call failed). The state is replaced only when this succeeds."
+  (let ((ok nil))
+    (unwind-protect
+         (multiple-value-bind (paths complete-p) (journal-drain (%area-journal area))
+           (let* ((old (%area-entries area))
+                  (new (if (or (not complete-p) (eq old :stale))
+                           (%area-current-entries area)
+                           (%narrow-entries area old paths))))
+             (setf (%area-entries area) new
+                   ok t)
+             new))
+      ;; Drained paths may be consumed: never trust the old state again.
+      (unless ok
+        (setf (%area-entries area) :stale)))))
+
 (defun %area-current-entries (area)
   "Sorted SNAPSHOT-ENTRY list of the area's tree now."
   (let ((fs (area-filesystem area))
@@ -337,6 +397,7 @@ where the base changed too) and stage the area's content, then write."
           (setf (gethash (fs-change-path (first p)) staged) (cddr p))))
       (%apply-changes fs base writes
                       (lambda (entry) (gethash (snapshot-entry-path entry) staged))))
+    (%close-area-journal area)
     (%delete-tree fs (%area-root area))
     (setf (%area-state area) :closed)
     (values (mapcar #'first plan) :committed)))
@@ -348,9 +409,10 @@ where the base changed too) and stage the area's content, then write."
   (unless (eq mechanism :copy)
     (%unsupported fs (format nil "area mechanism ~S" mechanism) base))
   (check-type journal (or boolean keyword))
-  ;; R4b-0 stub: only "no journal" works (:AUTO with nothing registered).
-  (unless (or (null journal) (and (eq journal :auto) (null *watch-mechanisms*)))
-    (%r4b0-pending 'fs-open-area-journal))
+  ;; An unknown mechanism fails before anything is created; an unavailable
+  ;; one fails at attach, and the cleanup below deletes what was made.
+  (unless (or (member journal '(nil t :auto :poll)) (%find-watch-mechanism journal))
+    (%unsupported fs (format nil "watch mechanism ~S" journal) base))
   (let ((base (%dir-root fs base)))
     (unless (fs-directory-p fs base)
       (error 'path-not-found :filesystem fs :path base :message "the area base does not exist"))
@@ -363,29 +425,51 @@ where the base changed too) and stage the area's content, then write."
              (root (if given
                        (fs-mkdir fs given :parents t :exist-ok t)
                        (%fresh-area-directory fs base)))
+             (j nil)
              (done nil))
         (unwind-protect
              (let ((records (%copy-into-area fs base root matcher)))
+               ;; Attached after the copy: the state starts as the manifest,
+               ;; which accounts for the copy.
+               (setf j (%attach-area-journal fs root matcher journal))
                (prog1 (make-instance 'area :filesystem fs :base base :root root
                                            :mechanism :copy :ignore matcher
-                                           :manifest records :opened-at opened-at)
+                                           :manifest records :opened-at opened-at
+                                           :journal j
+                                           :entries (and j (mapcar #'%area-record-entry records)))
                  (setf done t)))
           (unless done
+            (when j
+              (journal-close j))
             (%delete-tree fs root :keep-root existed)))))))
 
+(defun %attach-area-journal (fs root matcher journal)
+  "The journal FS-OPEN-AREA :JOURNAL JOURNAL attaches to ROOT, or NIL."
+  (case journal
+    ((nil) nil)
+    ((t) (fs-watch fs root :ignore matcher :mechanism :auto))
+    (:auto (let ((name (first (watch-mechanisms fs root))))
+             (unless (eq name :poll)
+               (fs-watch fs root :ignore matcher :mechanism name))))
+    (otherwise (fs-watch fs root :ignore matcher :mechanism journal))))
+
 (defmethod fs-area-changes ((area area) &key rescan)
-  (declare (ignore rescan))           ; R4b-0: the journal path is not implemented yet
   (%check-area-open area)
-  (%diff-entries (area-manifest area) (%area-current-entries area)))
+  (%diff-entries (area-manifest area)
+                 (if (or rescan (null (%area-journal area)))
+                     (%area-current-entries area) ; R4a; the journal and state untouched
+                     (%journal-area-entries area))))
 
 (defmethod fs-close-area ((area area) &key (action :discard))
   (%check-area-open area)
   (ecase action
     (:discard
+     (%close-area-journal area)
      (%delete-tree (area-filesystem area) (%area-root area))
      (setf (%area-state area) :closed)
      (values nil :discarded))
     (:keep
+     (%close-area-journal area)
      (setf (%area-state area) :closed)
      (values nil :kept))
     (:commit
