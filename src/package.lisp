@@ -325,4 +325,33 @@
    #:*watch-mechanisms*
    #:register-watch-mechanism
    #:unregister-watch-mechanism
-   #:watch-mechanisms))
+   #:watch-mechanisms
+   ;; R4c-0: copy-on-write clones (protocol + the portable copy rung)
+   #:fs-clone-tree
+   #:fs-clone-file
+   #:fs-clone-supported-p
+   #:fs-set-mtime
+   #:clone-tree
+   #:clone-file
+   #:clone-supported-p
+   #:set-mtime
+   #:clone-report
+   #:clone-report-p
+   #:clone-report-source
+   #:clone-report-destination
+   #:clone-report-mechanism
+   #:clone-report-reason
+   #:clone-report-cloned
+   #:clone-report-copied
+   #:clone-report-fallbacks
+   #:*clone-mechanisms*
+   #:register-clone-mechanism
+   #:unregister-clone-mechanism
+   #:clone-mechanisms
+   #:clone-error
+   #:clone-error-mechanism
+   #:clone-error-operation
+   #:clone-error-code
+   #:use-copy
+   #:invoke-use-copy
+   #:area-clone-report))
