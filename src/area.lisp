@@ -54,7 +54,10 @@ ABORT-COMMIT (write nothing; the area stays open).")
   ((filesystem :initarg :filesystem :reader area-filesystem)
    (base :initarg :base :reader %area-base :documentation "Directory pathname on FILESYSTEM.")
    (root :initarg :root :reader %area-root :documentation "Directory pathname of the copy.")
-   (mechanism :initarg :mechanism :reader area-mechanism :initform :copy)
+   (mechanism :initarg :mechanism :reader area-mechanism :initform :copy
+              :documentation ":COPY or :CLONE (R4c-0): how the area's tree was made.")
+   (clone-report :initarg :clone-report :reader area-clone-report :initform nil
+                 :documentation "R4c-0: the CLONE-REPORT of FS-CLONE-TREE that made the area's tree.")
    (ignore :initarg :ignore :reader area-ignore :initform nil
            :documentation "The resolved IGNORE-MATCHER (fixed at open), or NIL.")
    (manifest :initarg :manifest :accessor %area-manifest :initform nil
@@ -106,11 +109,16 @@ drained paths narrow; :STALE after a failed call (the next one rescans).")
 ;;; --- protocol ------------------------------------------------------------------
 
 (defgeneric fs-open-area (fs base &key mechanism ignore directory journal)
-  (:documentation "Open an area over the directory BASE on FS. MECHANISM
-:COPY (the default and the only portable one; anything else signals
-UNSUPPORTED-OPERATION here) copies the files, symlinks (as symlinks) and
-directories of BASE minus IGNORE (as FS-SNAPSHOT; :AUTO is resolved against
-BASE once, at open) into DIRECTORY, and records the manifest. DIRECTORY NIL
+  (:documentation "Open an area over the directory BASE on FS: the files,
+symlinks (as symlinks) and directories of BASE minus IGNORE (as FS-SNAPSHOT;
+:AUTO is resolved against BASE once, at open) are put into DIRECTORY by
+FS-CLONE-TREE (R4c-0: content, permission bits and mtimes kept), and the
+manifest is recorded. MECHANISM: :AUTO (the default) clones when a clone
+mechanism is available for BASE and the area directory, else copies;
+:COPY copies; :CLONE or a registered clone mechanism name must clone, else
+UNSUPPORTED-OPERATION and nothing is left on disk; :OVERLAY, :VIRTUAL and
+unknown keywords signal UNSUPPORTED-OPERATION before anything is created.
+AREA-MECHANISM is then :CLONE or :COPY, and AREA-CLONE-REPORT the report. DIRECTORY NIL
 makes a fresh temp directory on FS; a given DIRECTORY must be absent or empty
 (else PATH-EXISTS-ERROR). A missing BASE signals PATH-NOT-FOUND.
 JOURNAL (R4b-0) attaches a change journal to the area's root, with the
@@ -404,10 +412,20 @@ where the base changed too) and stage the area's content, then write."
 
 ;;; --- default methods -----------------------------------------------------------
 
-(defmethod fs-open-area ((fs filesystem) base &key (mechanism :copy) ignore directory
+(defmethod fs-open-area ((fs filesystem) base &key (mechanism :auto) ignore directory
                                                    (journal :auto))
-  (unless (eq mechanism :copy)
-    (%unsupported fs (format nil "area mechanism ~S" mechanism) base))
+  (check-type mechanism keyword)
+  ;; R4c-0 contract: only the R4a copy path is given (:COPY, and :AUTO with
+  ;; no clone mechanism registered); the refusals that need no registry are
+  ;; given too. Building the tree with FS-CLONE-TREE, the CLONE-REPORT and
+  ;; every clone mechanism are the implementation's.
+  (cond ((member mechanism '(:overlay :virtual))
+         (%unsupported fs (format nil "area mechanism ~S" mechanism) base))
+        ((or (eq mechanism :copy)
+             (and (eq mechanism :auto) (null *clone-mechanisms*))))
+        ((null *clone-mechanisms*)        ; :CLONE or a name, nothing registered
+         (%unsupported fs (format nil "area mechanism ~S" mechanism) base))
+        (t (%r4c0-pending 'fs-open-area-clone)))
   (check-type journal (or boolean keyword))
   ;; An unknown mechanism fails before anything is created; an unavailable
   ;; one fails at attach, and the cleanup below deletes what was made.
@@ -477,7 +495,7 @@ where the base changed too) and stage the area's content, then write."
 
 ;;; --- facade --------------------------------------------------------------------
 
-(defun open-area (base &key (mechanism :copy) ignore directory (journal :auto))
+(defun open-area (base &key (mechanism :auto) ignore directory (journal :auto))
   "FS-OPEN-AREA over the directory BASE. DIRECTORY, when given, is a
 designator on the same filesystem."
   (let ((p (ensure-path base :directory t)))
