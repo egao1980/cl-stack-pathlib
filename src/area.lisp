@@ -6,9 +6,10 @@
 ;;; open it records a manifest of the copy (path, mode, size, mtime, hash);
 ;;; FS-AREA-CHANGES rescans the copy, so edits made by anything (pathlib,
 ;;; CL:OPEN, a shell, another Lisp image) are found. FS-CLOSE-AREA discards,
-;;; keeps, or commits the changes back to the base. Only the :COPY mechanism
-;;; is portable; clones, overlays and virtual mounts belong to the
-;;; fs-backend-* repos (R4b+) and specialize the same generics.
+;;; keeps, or commits the changes back to the base. The tree is made by
+;;; FS-CLONE-TREE (R4c-0, clone.lisp): a registered clone mechanism when one
+;;; is available, else the portable :COPY rung. Overlays and virtual mounts
+;;; belong to later rungs (R4d, R4f).
 ;;;
 ;;; The scan, diff and change application are the snapshot internals
 ;;; (src/snapshot.lisp), so area changes are snapshot changes by construction.
@@ -169,29 +170,7 @@ area stays open). A closed area signals AREA-ERROR."))
   (unless (area-open-p area)
     (error 'area-error :area area :message "the area is closed")))
 
-(defun %posix-under-p (dir candidate)
-  "True when the directory CANDIDATE is DIR or below it (posix namestrings)."
-  (let ((d (string-right-trim "/" (%pathname-as-posix dir)))
-        (c (string-right-trim "/" (%pathname-as-posix candidate))))
-    (or (string= d c)
-        (uiop:string-prefix-p (concatenate 'string d "/") c))))
-
-(defun %delete-tree (fs dir &key keep-root)
-  "Delete the tree under the directory DIR (and DIR unless KEEP-ROOT).
-Symlinks are removed, never followed."
-  (labels ((clear (d)
-             (dolist (name (%child-names fs d))
-               (let ((pn (fs-join fs d name)))
-                 (cond ((fs-symlink-p fs pn) (fs-unlink fs pn))
-                       ((fs-directory-p fs pn)
-                        (let ((sub (uiop:ensure-directory-pathname pn)))
-                          (clear sub)
-                          (fs-rmdir fs sub)))
-                       (t (fs-unlink fs pn :missing-ok t)))))))
-    (when (fs-directory-p fs dir)
-      (clear dir)
-      (unless keep-root
-        (fs-rmdir fs dir)))))
+;;; %POSIX-UNDER-P and %DELETE-TREE are in clone.lisp (FS-CLONE-TREE uses them).
 
 (defun %check-area-directory (fs base dir)
   "DIR must be absent or an empty directory, and not inside BASE."
@@ -230,34 +209,18 @@ Symlinks are removed, never followed."
     (error 'path-error :filesystem fs :path base
                        :message "could not make a fresh area directory")))
 
-(defun %copy-into-area (fs base root matcher)
-  "Copy the tree under BASE (minus MATCHER) into ROOT; return the sorted
-%AREA-RECORD list: the base entry as copied plus the copy's size and mtime."
-  (let ((records '()))
-    (dolist (node (%scan-tree fs base matcher))
-      (let ((src (%node-pathname node))
-            (rel (%node-path node)))
-        (ecase (%node-kind node)
-          (:directory
-           (fs-mkdir fs (fs-join fs root rel) :parents t :exist-ok t))
-          (:file
-           (let* ((bytes (fs-read-bytes fs src))
-                  (mode (%file-mode fs src))
-                  (dst (fs-join fs root rel)))
-             (fs-write-atomic fs dst bytes)
-             (%fs-set-executable fs dst (eq mode :executable))
-             (let ((st (fs-stat fs dst :follow-symlinks nil)))
-               (push (%make-area-record (make-snapshot-entry rel mode (octets-hash bytes))
-                                        (file-stat-size st) (file-stat-mtime st))
-                     records))))
-          (:symlink
-           (let ((o (%symlink-octets fs src))
-                 (dst (fs-join fs root rel)))
-             (fs-mkdir fs (fs-parent fs dst) :parents t :exist-ok t)
-             (fs-create-symlink fs dst (utf8-decode o))
-             (push (%make-area-record (make-snapshot-entry rel :symlink (octets-hash o)) nil nil)
-                   records))))))
-    (nreverse records)))
+(defun %area-records (fs root matcher)
+  "The sorted %AREA-RECORD list of the area's tree at ROOT once it is made:
+the entry (hash read from the area's file, streamed on local), plus the size
+and mtime of the area's file. Read from the area, so it is right whichever
+mechanism or hook made the tree."
+  (loop for node in (%scan-tree fs root matcher)
+        unless (eq (%node-kind node) :directory)
+          collect (let ((entry (%node-entry fs node)))
+                    (if (eq (%node-kind node) :file)
+                        (let ((st (fs-stat fs (%node-pathname node) :follow-symlinks nil)))
+                          (%make-area-record entry (file-stat-size st) (file-stat-mtime st)))
+                        (%make-area-record entry nil nil)))))
 
 (defun %record-fresh-p (fs node record cutoff)
   "Racy-git rule: the recorded hash of a regular file may be reused only when
@@ -415,17 +378,12 @@ where the base changed too) and stage the area's content, then write."
 (defmethod fs-open-area ((fs filesystem) base &key (mechanism :auto) ignore directory
                                                    (journal :auto))
   (check-type mechanism keyword)
-  ;; R4c-0 contract: only the R4a copy path is given (:COPY, and :AUTO with
-  ;; no clone mechanism registered); the refusals that need no registry are
-  ;; given too. Building the tree with FS-CLONE-TREE, the CLONE-REPORT and
-  ;; every clone mechanism are the implementation's.
-  (cond ((member mechanism '(:overlay :virtual))
-         (%unsupported fs (format nil "area mechanism ~S" mechanism) base))
-        ((or (eq mechanism :copy)
-             (and (eq mechanism :auto) (null *clone-mechanisms*))))
-        ((null *clone-mechanisms*)        ; :CLONE or a name, nothing registered
-         (%unsupported fs (format nil "area mechanism ~S" mechanism) base))
-        (t (%r4c0-pending 'fs-open-area-clone)))
+  ;; :OVERLAY (R4d), :VIRTUAL (R4f) and unknown names fail before anything is
+  ;; created. A known strict mechanism that is unavailable for the area
+  ;; directory fails in FS-CLONE-TREE once that directory exists, and the
+  ;; cleanup below removes it (or leaves a given empty one empty).
+  (unless (or (member mechanism '(:auto :copy :clone)) (%find-clone-mechanism mechanism))
+    (%unsupported fs (format nil "area mechanism ~S" mechanism) base))
   (check-type journal (or boolean keyword))
   ;; An unknown mechanism fails before anything is created; an unavailable
   ;; one fails at attach, and the cleanup below deletes what was made.
@@ -446,12 +404,16 @@ where the base changed too) and stage the area's content, then write."
              (j nil)
              (done nil))
         (unwind-protect
-             (let ((records (%copy-into-area fs base root matcher)))
-               ;; Attached after the copy: the state starts as the manifest,
-               ;; which accounts for the copy.
+             (let* ((report (fs-clone-tree fs base root :ignore matcher :mechanism mechanism))
+                    (records (%area-records fs root matcher)))
+               ;; Attached after the tree is made: the state starts as the
+               ;; manifest, which accounts for it.
                (setf j (%attach-area-journal fs root matcher journal))
                (prog1 (make-instance 'area :filesystem fs :base base :root root
-                                           :mechanism :copy :ignore matcher
+                                           :mechanism (if (eq :copy (clone-report-mechanism report))
+                                                          :copy
+                                                          :clone)
+                                           :clone-report report :ignore matcher
                                            :manifest records :opened-at opened-at
                                            :journal j
                                            :entries (and j (mapcar #'%area-record-entry records)))
