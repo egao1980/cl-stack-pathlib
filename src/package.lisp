@@ -306,4 +306,23 @@
    #:skip-path
    #:abort-commit
    #:invoke-skip-path
-   #:invoke-abort-commit))
+   #:invoke-abort-commit
+   ;; R4b-0: change journals (protocol + the portable :poll fallback)
+   #:area-journal
+   #:fs-watch
+   #:journal
+   #:journal-p
+   #:journal-filesystem
+   #:journal-root
+   #:journal-ignore
+   #:journal-mechanism
+   #:journal-open-p
+   #:journal-drain
+   #:journal-close
+   #:*journal-settle*
+   #:journal-error
+   #:journal-error-journal
+   #:*watch-mechanisms*
+   #:register-watch-mechanism
+   #:unregister-watch-mechanism
+   #:watch-mechanisms))

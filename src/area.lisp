@@ -60,6 +60,8 @@ ABORT-COMMIT (write nothing; the area stays open).")
    (manifest :initarg :manifest :accessor %area-manifest :initform nil
              :documentation "Per-path record at open: entry + size + mtime of the copy.")
    (opened-at :initarg :opened-at :reader %area-opened-at :initform nil)
+   (journal :initarg :journal :accessor %area-journal :initform nil
+            :documentation "R4b-0: the JOURNAL over the copy, or NIL (full rescans).")
    (state :initarg :state :accessor %area-state :initform :open
           :documentation ":OPEN or :CLOSED."))
   (:documentation "A writable copy of a base directory. Made by FS-OPEN-AREA."))
@@ -87,6 +89,10 @@ ABORT-COMMIT (write nothing; the area stays open).")
 (defun area-open-p (area)
   (eq (%area-state area) :open))
 
+(defun area-journal (area)
+  "The JOURNAL attached to the area's root (FS-OPEN-AREA :JOURNAL), or NIL."
+  (%area-journal area))
+
 (defmethod print-object ((a area) stream)
   (print-unreadable-object (a stream :type t)
     (format stream "~S ~A ~S" (area-mechanism a)
@@ -95,28 +101,46 @@ ABORT-COMMIT (write nothing; the area stays open).")
 
 ;;; --- protocol ------------------------------------------------------------------
 
-(defgeneric fs-open-area (fs base &key mechanism ignore directory)
+(defgeneric fs-open-area (fs base &key mechanism ignore directory journal)
   (:documentation "Open an area over the directory BASE on FS. MECHANISM
 :COPY (the default and the only portable one; anything else signals
 UNSUPPORTED-OPERATION here) copies the files, symlinks (as symlinks) and
 directories of BASE minus IGNORE (as FS-SNAPSHOT; :AUTO is resolved against
 BASE once, at open) into DIRECTORY, and records the manifest. DIRECTORY NIL
 makes a fresh temp directory on FS; a given DIRECTORY must be absent or empty
-(else PATH-EXISTS-ERROR). A missing BASE signals PATH-NOT-FOUND. Returns the
-AREA."))
+(else PATH-EXISTS-ERROR). A missing BASE signals PATH-NOT-FOUND.
+JOURNAL (R4b-0) attaches a change journal to the area's root, with the
+area's ignore matcher: :AUTO (the default) attaches one only when the first
+of (WATCH-MECHANISMS FS root) is not :POLL; T attaches (FS-WATCH ... :MECHANISM
+:AUTO), which may be :POLL; a mechanism keyword (:POLL included) attaches that
+one, and an unknown or unavailable one signals UNSUPPORTED-OPERATION before
+anything is created; NIL attaches none. The journal sees every edit made
+after FS-OPEN-AREA returns. Returns the AREA."))
 
-(defgeneric fs-area-changes (area)
+(defgeneric fs-area-changes (area &key rescan)
   (:documentation "Rescan the area: the FS-CHANGE list (sorted by path) from
 the manifest recorded at open to the area's tree now, ignored paths left out.
 A file whose size or mtime differs from the record, or whose recorded mtime
 is not older than the open time minus 2 s (mtime granularity), is hashed; a
 same-size edit within the same second is found. An entry edited back to its
-original content is not a change. A closed area signals AREA-ERROR."))
+original content is not a change. A closed area signals AREA-ERROR.
+With a journal (AREA-JOURNAL) and RESCAN NIL (the default), the journal is
+drained and only the drained paths are re-examined: each drained path P, and
+everything below P, is looked up by exact name in the listing of its parent
+directory (so deletes, renames and case-only renames are seen), and every
+other entry keeps its state from the previous call. COMPLETE-P NIL falls back
+to the full rescan. RESCAN T is the full R4a rescan and leaves the journal and
+the area's state untouched. Law: for every edit, the result with the journal
+is EQUAL (same kinds, paths, modes and hashes) to the result with RESCAN T."))
 
 (defgeneric fs-close-area (area &key action)
   (:documentation "Close AREA. ACTION :DISCARD (default) deletes the copy;
 :KEEP leaves it on disk; :COMMIT applies FS-AREA-CHANGES to the base and then
-deletes the copy. A commit first checks every changed path against the base:
+deletes the copy. An attached journal is closed (JOURNAL-CLOSE) before the
+copy is deleted, on every action but an aborted commit. A commit computes the
+changes with the full rescan (FS-AREA-CHANGES :RESCAN T: a journal is never
+trusted with what gets written) and first checks every changed path against
+the base:
 when the base entry differs both from the manifest and from the area entry,
 AREA-CONFLICT is signalled (restarts OVERWRITE, SKIP-PATH, ABORT-COMMIT);
 nothing is written until every conflict is resolved. Base paths the area did
@@ -273,7 +297,7 @@ checked against CHANGE's new hash."
 where the base changed too) and stage the area's content, then write."
   (let* ((fs (area-filesystem area))
          (base (%area-base area))
-         (changes (fs-area-changes area))
+         (changes (fs-area-changes area :rescan t)) ; never trust a journal on commit
          (open (make-hash-table :test #'equal))
          (plan '()))                     ; (area-change base-change . octets)
     (dolist (e (area-manifest area))
@@ -319,9 +343,14 @@ where the base changed too) and stage the area's content, then write."
 
 ;;; --- default methods -----------------------------------------------------------
 
-(defmethod fs-open-area ((fs filesystem) base &key (mechanism :copy) ignore directory)
+(defmethod fs-open-area ((fs filesystem) base &key (mechanism :copy) ignore directory
+                                                   (journal :auto))
   (unless (eq mechanism :copy)
     (%unsupported fs (format nil "area mechanism ~S" mechanism) base))
+  (check-type journal (or boolean keyword))
+  ;; R4b-0 stub: only "no journal" works (:AUTO with nothing registered).
+  (unless (or (null journal) (and (eq journal :auto) (null *watch-mechanisms*)))
+    (%r4b0-pending 'fs-open-area-journal))
   (let ((base (%dir-root fs base)))
     (unless (fs-directory-p fs base)
       (error 'path-not-found :filesystem fs :path base :message "the area base does not exist"))
@@ -344,7 +373,8 @@ where the base changed too) and stage the area's content, then write."
           (unless done
             (%delete-tree fs root :keep-root existed)))))))
 
-(defmethod fs-area-changes ((area area))
+(defmethod fs-area-changes ((area area) &key rescan)
+  (declare (ignore rescan))           ; R4b-0: the journal path is not implemented yet
   (%check-area-open area)
   (%diff-entries (area-manifest area) (%area-current-entries area)))
 
@@ -363,16 +393,16 @@ where the base changed too) and stage the area's content, then write."
 
 ;;; --- facade --------------------------------------------------------------------
 
-(defun open-area (base &key (mechanism :copy) ignore directory)
+(defun open-area (base &key (mechanism :copy) ignore directory (journal :auto))
   "FS-OPEN-AREA over the directory BASE. DIRECTORY, when given, is a
 designator on the same filesystem."
   (let ((p (ensure-path base :directory t)))
     (fs-open-area (path-filesystem p) (path-pathname p)
-                  :mechanism mechanism :ignore ignore
+                  :mechanism mechanism :ignore ignore :journal journal
                   :directory (when directory (%pn (ensure-path directory :directory t))))))
 
-(defun area-changes (area)
-  (fs-area-changes area))
+(defun area-changes (area &key rescan)
+  (fs-area-changes area :rescan rescan))
 
 (defun close-area (area &key (action :discard))
   (fs-close-area area :action action))

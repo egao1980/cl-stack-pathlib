@@ -1,5 +1,5 @@
 (defsystem "cl-stack-pathlib"
-  :version "0.8.0"
+  :version "0.9.0"
   :description "CLOS paths + pluggable filesystems (pathlib/NIO-style) for cl-stack"
   :author "egao1980"
   :license "MIT"
@@ -22,11 +22,18 @@
                (:file "zip")
                (:file "extensions")
                (:file "snapshot")
+               (:file "journal")
                (:file "area"))
   :in-order-to ((test-op (test-op "cl-stack-pathlib/tests"))))
 
+(defsystem "cl-stack-pathlib/journal-suite"
+  :description "R4b journal law: the scripted edit corpus every fs-watch mechanism runs"
+  :depends-on ("cl-stack-pathlib" "uiop")
+  :pathname "tests"
+  :components ((:file "journal-suite")))
+
 (defsystem "cl-stack-pathlib/tests"
-  :depends-on ("cl-stack-pathlib" "rove")
+  :depends-on ("cl-stack-pathlib" "cl-stack-pathlib/journal-suite" "rove")
   :pathname "tests"
   :serial t
   :components ((:file "package")
@@ -58,7 +65,9 @@
                (:file "legacy-glob-test")
                (:file "symlink-p-test")
                (:file "mode-test")
-               (:file "store-gc-test"))
+               (:file "store-gc-test")
+               (:file "journal-fakes")
+               (:file "journal-test"))
   :perform (test-op (o c)
              (unless (symbol-call :rove :run c)
                (error "tests failed for ~A" (component-name c)))))
